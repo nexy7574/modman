@@ -347,6 +347,9 @@ def update_mod(
     for item in queue:
         _mod_info = item["mod"]
         _version_info = item["new_version"]
+        if _version_info["id"] == item["old_version"]["id"]:
+            logging.warning("Not upgrading %s, already up to date.", _mod_info["title"])
+            continue
         logging.debug("Downloading %s==%s", _mod_info["title"], _version_info["name"])
         api.download_mod(_version_info, Path.cwd() / "mods")
         try:
