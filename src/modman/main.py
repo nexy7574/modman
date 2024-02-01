@@ -174,6 +174,10 @@ def install_mod(
                 loader=config["modman"]["server"]["type"],
                 game_version=config["modman"]["server"]["version"]
             )
+            if not versions:
+                logging.critical("Mod %s does not support %s (no versions).", mod_info["title"],
+                                 config["modman"]["server"]["version"])
+                continue
             version_info = versions[0]
         else:
             version_info = api.get_version(mod_info["id"], version)
@@ -296,6 +300,9 @@ def update_mod(
             loader=config["modman"]["server"]["type"],
             game_version=game_version
         )
+        if not versions:
+            logging.critical("Mod %s does not support %s (no versions).", mod_info["title"], game_version)
+            continue
         version_info = versions[0]
         if version_info["id"] == config["mods"][mod_info["slug"]]["version"]["id"]:
             logging.info("Mod %s is already up to date.", mod_info["title"])
