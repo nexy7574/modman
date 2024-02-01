@@ -3,3 +3,4 @@ click~=8.1
 toml~=0.10
 rich~=13.7
 appdirs~=1.4
+packaging~=23.2

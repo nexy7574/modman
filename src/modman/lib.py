@@ -1,6 +1,7 @@
 import os
 import pathlib
 import shutil
+import textwrap
 import typing
 import hashlib
 import rich
@@ -37,7 +38,7 @@ class ModrinthAPI:
         )
 
         self.ratelimit_reset = 0
-        self.ratelimit_remaining = 0
+        self.ratelimit_remaining = 500
 
     def get(self, url: str, params: dict[str, typing.Any] = None) -> dict | list:
         if self.ratelimit_remaining == 0:
@@ -50,10 +51,20 @@ class ModrinthAPI:
                     time.sleep(1)
                     progress.update(task, advance=1)
         with rich.get_console().status("GET " + url):
-            response = self.http.get(url, params=params)
+            for i in range(5):
+                try:
+                    response = self.http.get(url, params=params)
+                except httpx.ConnectError:
+                    self.log.warning("Connection error, retrying...")
+                    continue
+                break
+            else:
+                raise RuntimeError("Failed to connect to Modrinth API")
         self.ratelimit_reset = int(response.headers.get("x-ratelimit-reset", 0))
-        self.ratelimit_remaining = int(response.headers.get("x-ratelimit-remaining", 0))
-        logging.debug(response.text)
+        self.ratelimit_remaining = int(response.headers.get("x-ratelimit-remaining", 100))
+        if response.status_code == 429:
+            return self.get(url, params)
+        logging.debug(textwrap.shorten(response.text, 10240))
         if response.status_code not in range(200, 300):
             response.raise_for_status()
         return response.json()
@@ -61,17 +72,55 @@ class ModrinthAPI:
     def get_project(self, project_id: str):
         return self.get(f"/project/{project_id}")
 
-    def get_versions(self, project_id: str, loader: str = None, game_version: str = None):
+    def get_versions(self, project_id: str, loader: str = None, game_version: str = None, release_only: bool = True):
         params = {}
+
         if loader is not None:
             params["loaders"] = [loader]
         if game_version is not None:
             params["game_versions"] = [game_version]
-        return self.get(f"/project/{project_id}/version", params=params)
+
+        result = self.get(f"/project/{project_id}/version", params=params)
+        result.sort(key=lambda v: v["date_published"], reverse=True)
+
+        if game_version:
+            for version in result.copy():
+                if game_version not in version["game_versions"]:
+                    result.remove(version)
+                    self.log.debug(
+                        "Removed %s from %s - invalid game versions (%s)",
+                        version["version_number"],
+                        project_id,
+                        ", ".join(version["game_versions"])
+                    )
+        if loader:
+            for version in result.copy():
+                if loader not in version["loaders"]:
+                    result.remove(version)
+                    self.log.debug(
+                        "Removed %s from %s - invalid loaders (%s)",
+                        version["version_number"],
+                        project_id,
+                        ", ".join(version["loaders"])
+                    )
+
+        if release_only:
+            real_copy = result.copy()
+            for version in result.copy():
+                if version["version_type"] != "release":
+                    real_copy.remove(version)
+                    self.log.debug("Removed %s from %s - pre-release", version["version_number"], project_id)
+            if real_copy:
+                result = real_copy
+            else:
+                self.log.warning("No release versions found for %s - permitting pre-release versions", project_id)
+
+        self.log.debug("Got the following versions after filtering for %s: %s", project_id, result)
+        return result
 
     def get_version(self, project_id: str, version_id: str | None):
         if version_id is None:
-            self.log.warning("No version specified, using latest.")
+            self.log.info("No version specified for %s==%s, using latest.", project_id, version_id)
             versions = self.get_versions(project_id)
             return versions[0]
         return self.get(f"/project/{project_id}/version/{version_id}")
@@ -104,7 +153,7 @@ class ModrinthAPI:
                 return file
         return files[0]
 
-    def download_mod(self, version: dict, directory: pathlib.Path):
+    def download_mod(self, version: dict, directory: pathlib.Path, *, progress: Progress = None):
         file = self.pick_primary_file(version["files"])
         if not directory.exists():
             directory.mkdir(parents=True)
@@ -112,16 +161,19 @@ class ModrinthAPI:
         # First, check the cache directory
         cache_dir = pathlib.Path(appdirs.user_cache_dir("modman"))
         cache_dir.mkdir(parents=True, exist_ok=True)
-        if not (fs_file := cache_dir / file["filename"]).exists():
+        cache_file = fs_file = cache_dir / file["filename"]
+        if cache_file.exists() is False or (cache_file.stat().st_ctime + 1209600) < time.time():
             # If it doesn't exist, download it
             self.log.info("Downloading %s", file["filename"])
             with self.http.stream("GET", file["url"]) as response:
                 with fs_file.open("wb") as fd:
-                    with Progress(
-                        *Progress.get_default_columns(),
-                        DownloadColumn(os.name != "nt"),
-                        TransferSpeedColumn()
-                    ) as progress:
+                    if progress is None:
+                        progress = Progress(
+                            *Progress.get_default_columns(),
+                            DownloadColumn(os.name != "nt"),
+                            TransferSpeedColumn()
+                        )
+                    with progress:
                         task = progress.add_task(
                             "Downloading " + file["filename"],
                             total=int(response.headers.get("content-length", 0))
@@ -129,6 +181,8 @@ class ModrinthAPI:
                         for chunk in response.iter_bytes():
                             fd.write(chunk)
                             progress.update(task, advance=len(chunk))
+        else:
+            self.log.info("Using cached file: %s", fs_file.resolve())
 
         self.log.info("Checking file hash")
         fs_hash = hashlib.new("sha512")
@@ -143,7 +197,7 @@ class ModrinthAPI:
         # Move to the mod directory
         fs_mod = directory / file["filename"]
         self.log.debug("Moving %s -> %s", fs_file, fs_mod)
-        shutil.move(fs_file, fs_mod)
+        shutil.copy(fs_file, fs_mod)
         self.log.info("Downloaded %s", file["filename"])
 
     def find_dependency_conflicts(self, project_id: str, version_id: str, config: dict) -> list[dict[str, str]]:
