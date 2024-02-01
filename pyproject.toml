@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools", "wheel", "setuptools_scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "modman"
+description = "Simple CLI to interact with Modrinth and manage server mods."
+readme = {file = "README.md", content-type = "text/markdown"}
+requires-python = ">=3.10"
+license = { text = "GNU GPLv3" }
+authors = [
+    {name = "Nexus", email = "pip@nexy7574.co.uk"}
+]
+dynamic = ["version", "dependencies"]
+#classifiers = [
+#    "Development Status :: 5 - Production/Stable",
+#    "Intended Audience :: Developers",
+#    "Natural Language :: English",
+#    "Operating System :: Microsoft :: Windows",
+#    "Operating System :: POSIX",
+#    "Programming Language :: Python :: 3 :: Only",
+#    "Programming Language :: Python :: 3.10",
+#    "Programming Language :: Python :: 3.11",
+#    "Programming Language :: Python :: 3.12",
+#    "Programming Language :: Python :: Implementation :: CPython",
+#    "Topic :: Communications",
+#    "Topic :: Internet",
+#    "Topic :: Software Development :: Libraries",
+#    "Topic :: Software Development :: Libraries :: Application Frameworks",
+#    "Topic :: Utilities"
+#]
+
+[project.urls]
+Source = "https://github.com/nexy7574/modman"
+Tracker = "https://github.com/nexy7574/modman/issues"
+Funding = "https://ko-fi.com/nexy7574"
+
+[project.scripts]
+modman = "modman.main:main"
+
+[tool.setuptools_scm]
+write_to = "src/modman/__version__.py"
+
+[tool.setuptools.dynamic]
+dependencies = {file = "requirements.txt"}
+
+[tool.black]
+line-length = 120
+target-versions = ["py39", "py310", "py311", "py312"]
+include = 'src/modman(/utils)?/.+\.py'
+
+[tool.isort]
+profile = "black"
+src_paths = ["src/modman"]

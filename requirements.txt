@@ -1,0 +1,5 @@
+httpx[http2,brotli]~=0.26
+click~=8.1
+toml~=0.10
+rich~=13.7
+appdirs~=1.4
