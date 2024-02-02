@@ -64,7 +64,14 @@ def init(
         server_type: str,
         server_version: str
 ):
-    """Creates a modman project in the current directory."""
+    """Creates a modman project in the current directory.
+
+    SERVER_VERSION should be the minecraft version of the server, for example, 1.20.2, or 23w18a.
+
+    In order for auto detection to work, you must already have a ./mods/ directory."""
+    if server_type == "forge":
+        logging.error("Forge is not supported.")
+        return
     if auto is False and (server_type == "auto" or server_version == "auto"):
         logging.error("'--no-auto' and '--server-type/-version auto' are mutually exclusive.")
         return
@@ -152,6 +159,11 @@ def install_mod(
 ):
     """Installs a mod."""
     config = load_config()
+    if not mods:
+        mods = config["mods"].keys()
+        if not mods:
+            logging.critical("No mods specified. Did you mean `modman init`?")
+            return
     api = ModrinthAPI()
     collected_mods = []
     for mod in mods:
@@ -161,7 +173,7 @@ def install_mod(
             version = "latest"
         mod_info = api.get_project(mod)
         if mod_info["slug"] in config["mods"]:
-            rich.print("Mod %s is already installed. Did you mean `modman update`?" % mod_info["title"])
+            logging.info("Mod %s is already installed. Did you mean `modman update`?" % mod_info["title"])
             if reinstall is False:
                 continue
             version = config["mods"][mod_info["slug"]]["version"]["id"]
@@ -281,6 +293,14 @@ def update_mod(
         game_version: str = None,
         optional: bool = True
 ):
+    """Updates one or more mods.
+
+    If no mods are specified, all mods will be updated.
+
+    If a mod is specified, all of its dependencies will be updated too.
+
+    If a mod does not have any updates available, it will be skipped.
+    """
     api = ModrinthAPI()
     config = load_config()
     if not mods:
@@ -392,6 +412,7 @@ def update_mod(
     help="Whether to delete dependencies too."
 )
 def uninstall(mods: tuple[str], purge: bool):
+    """Properly deletes & uninstalls a mod."""
     if not mods:
         rich.print("[red]No mods specified.")
         return
@@ -433,6 +454,7 @@ def uninstall(mods: tuple[str], purge: bool):
 
 @main.command("list")
 def list_mods():
+    """Lists all installed mods and their version."""
     config = load_config()
     table = Table("Mod", "Version", title=f"Installed Mods (Minecraft {config['modman']['server']['version']})")
     for mod in config["mods"].values():
@@ -454,7 +476,9 @@ def list_mods():
 @main.command("pack")
 @click.option("--server-side", "-S", is_flag=True, help="Whether to include server-side mods.")
 def create_pack(server_side: bool):
-    """Creates a modpack zip to send to people using the server"""
+    """Creates a modpack zip to send to people using the server
+
+    This will only include client-side mods by default. You can include all mods with the -S flag."""
     config = load_config()
     if not (Path.cwd() / "mods").exists():
         logging.critical("No mods directory found. Are you in the right directory?")
@@ -477,6 +501,11 @@ def create_pack(server_side: bool):
 @click.argument("loader_version", required=False)
 @click.argument("installer_version", required=False)
 def download_fabric(game_version: str, loader_version: str | None, installer_version: str | None):
+    """Downloads a Fabric server.
+
+    GAME_VERSION should be the minecraft version of the server, for example, 1.20.2, or 23w18a.
+
+    If LOADER_VERSION or INSTALLER_VERSION are not specified, the latest version will be used. This is recommended."""
     loader_version = loader_version or "latest"
     installer_version = installer_version or "latest"
     api = ModrinthAPI()

@@ -41,6 +41,7 @@ class ModrinthAPI:
         self.ratelimit_remaining = 500
 
     def get(self, url: str, params: dict[str, typing.Any] = None) -> dict | list:
+
         if self.ratelimit_remaining == 0:
             self.log.warning("Ratelimit reached, waiting %s seconds", self.ratelimit_reset)
             with Progress() as progress:
@@ -50,7 +51,7 @@ class ModrinthAPI:
                 for i in range(wait_seconds):
                     time.sleep(1)
                     progress.update(task, advance=1)
-        with rich.get_console().status("GET " + url):
+        with rich.get_console().status("[cyan dim]GET " + url):
             for i in range(5):
                 try:
                     response = self.http.get(url, params=params)
