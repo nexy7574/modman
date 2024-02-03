@@ -59,6 +59,17 @@ Any mods that do not support the current version will not be modified.
 
 `modman list` produces a nice table of installed mods and their versions.
 
+### Searching for mods
+
+`modman search <query>` will search Modrinth for mods that match the query.
+
+If you want to find the top relevant mods, you can pass an empty string to `modman search` (i.e. `modman search ''`).
+
+### Viewing mod information
+
+`modman view <mod>` will show you neatly organised information about the given mod, similarly laid out to the modrinth
+website. Note that this command only takes one mod at a time, unlike the rest.
+
 ### Creating client mod packs
 
 ModMan allows you to pack all mods that have client-side support into a zip file to share with friends or server
