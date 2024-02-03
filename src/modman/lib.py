@@ -227,6 +227,7 @@ class ModrinthAPI:
         offset: int = 0,
         index: str = "relevance",
         *,
+        versions: list[str] = None,
         project_type: list[str] = None,
         categories: list[str] = None,
         loaders: list[str] = None,
@@ -262,6 +263,10 @@ class ModrinthAPI:
             "index": index,
             "facets": [["server_side!=unsupported"]],
         }
+
+        if versions:
+            for version in versions:
+                params["facets"].append([f"game_versions:{version}"])
 
         if project_type:
             for ptype in project_type:

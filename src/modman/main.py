@@ -45,8 +45,8 @@ aikars_flags = [
 
 def load_config():
     if not Path(".modman.json").exists():
-        logging.critical("Could not find modman.json. Have you run `modman init`?")
-        raise click.Abort()
+        logging.warning("Could not find modman.json. Have you run `modman init`?")
+        raise click.Abort("No modman.json found.")
 
     with open(".modman.json", "r") as fd:
         return json.load(fd)
@@ -77,8 +77,7 @@ def init(name: str, auto: bool, server_type: str, server_version: str):
 
     In order for auto-detection to work, you must already have a ./mods/ directory."""
     if server_type == "forge":
-        logging.error("Forge is not supported.")
-        return
+        logging.error("Forge is not fully supported.")
     if auto is False and (server_type == "auto" or server_version == "auto"):
         logging.error("'--no-auto' and '--server-type/-version auto' are mutually exclusive.")
         return
@@ -675,9 +674,32 @@ def search(sort_by: str, page: int, limit: int, query: str):
         return
 
     api = ModrinthAPI()
+    try:
+        config = load_config()
+        logging.info(
+            "Loaded modman config, using Minecraft version %s with server type %s.",
+            config["modman"]["server"]["version"],
+            config["modman"]["server"]["type"],
+        )
+    except RuntimeError:
+        response = api.get("https://meta.fabricmc.net/v2/versions/game/intermediary")
+        response = list(filter(lambda x: x["version"].count(".") == 2 and x["stable"], response))
+        config = {"modman": {"server": {"type": "fabric", "version": response[0]["version"]}}}
+        logging.info(
+            "Failed to read modman config, using latest Minecraft version (%s) with fabric.",
+            config["modman"]["server"]["version"],
+        )
     offset = limit * (page - 1)
 
-    results = api.search(query, limit, offset, sort_by, loaders=["fabric"], server_side=["required", "optional"])
+    results = api.search(
+        query,
+        limit,
+        offset,
+        sort_by,
+        loaders=[config["modman"]["server"]["type"]],
+        server_side=["required", "optional"],
+        versions=[config["modman"]["server"]["version"]],
+    )
     table = Table("Title", "ID", "Downloads", "Description", title="Search Results")
     n = 0
     for result in results:
