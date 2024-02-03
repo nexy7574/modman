@@ -1,21 +1,25 @@
+import hashlib
+import importlib.metadata
+import json
+import logging
+import math
 import os
 import pathlib
 import shutil
 import textwrap
-import typing
-import hashlib
-import rich
-import appdirs
 import time
-import math
-from rich.progress import track, open as rich_open, Progress, DownloadColumn, TransferSpeedColumn
+import typing
 
+import appdirs
 import httpx
-import logging
-import importlib.metadata
+import rich
+from rich.progress import DownloadColumn, Progress, TransferSpeedColumn
+from rich.progress import open as rich_open
+from rich.progress import track
 
 try:
     import h2
+
     HTTP2 = True
 except ImportError:
     HTTP2 = False
@@ -34,7 +38,7 @@ class ModrinthAPI:
                 "User-Agent": f"modman/{_version} (https://github.com/nexy7574/modman)",
             },
             http2=HTTP2,
-            follow_redirects=True
+            follow_redirects=True,
         )
 
         self.ratelimit_reset = 0
@@ -92,7 +96,7 @@ class ModrinthAPI:
                         "Removed %s from %s - invalid game versions (%s)",
                         version["version_number"],
                         project_id,
-                        ", ".join(version["game_versions"])
+                        ", ".join(version["game_versions"]),
                     )
         if loader:
             for version in result.copy():
@@ -102,7 +106,7 @@ class ModrinthAPI:
                         "Removed %s from %s - invalid loaders (%s)",
                         version["version_number"],
                         project_id,
-                        ", ".join(version["loaders"])
+                        ", ".join(version["loaders"]),
                     )
 
         if release_only:
@@ -127,9 +131,7 @@ class ModrinthAPI:
         return self.get(f"/project/{project_id}/version/{version_id}")
 
     def get_version_from_hash(
-            self,
-            file_hash: pathlib.Path | str | None = None,
-            algorithm: typing.Literal["sha1", "sha512"] = "sha512"
+        self, file_hash: pathlib.Path | str | None = None, algorithm: typing.Literal["sha1", "sha512"] = "sha512"
     ):
         if isinstance(file_hash, pathlib.Path):
             file = file_hash
@@ -142,10 +144,7 @@ class ModrinthAPI:
         if not isinstance(file_hash, str):
             raise TypeError("file_hash must be a string or pathlib.Path")
 
-        return self.get(
-            f"/version_file/{file_hash}",
-            params={"algorithm": algorithm}
-        )
+        return self.get(f"/version_file/{file_hash}", params={"algorithm": algorithm})
 
     @staticmethod
     def pick_primary_file(files: list[dict]) -> dict:
@@ -170,14 +169,11 @@ class ModrinthAPI:
                 with fs_file.open("wb") as fd:
                     if progress is None:
                         progress = Progress(
-                            *Progress.get_default_columns(),
-                            DownloadColumn(os.name != "nt"),
-                            TransferSpeedColumn()
+                            *Progress.get_default_columns(), DownloadColumn(os.name != "nt"), TransferSpeedColumn()
                         )
                     with progress:
                         task = progress.add_task(
-                            "Downloading " + file["filename"],
-                            total=int(response.headers.get("content-length", 0))
+                            "Downloading " + file["filename"], total=int(response.headers.get("content-length", 0))
                         )
                         for chunk in response.iter_bytes():
                             fd.write(chunk)
@@ -219,7 +215,81 @@ class ModrinthAPI:
                                 "project_id": project_id,
                                 "conflict_project_id": mod["project"]["id"],
                                 "version_id": version_id,
-                                "conflict_version_id": dependency["version_id"]
+                                "conflict_version_id": dependency["version_id"],
                             }
                         )
         return conflicts
+
+    def search(
+        self,
+        query: str,
+        limit: int = 100,
+        offset: int = 0,
+        index: str = "relevance",
+        *,
+        project_type: list[str] = None,
+        categories: list[str] = None,
+        loaders: list[str] = None,
+        client_side: list[str] = None,
+        server_side: list[str] = None,
+        open_source: bool = None,
+    ) -> list[dict[str, typing.Any]]:
+        """
+        Searches Modrinth, returning the results.
+
+        :param query: The actual query.
+        :param limit: The maximum number of results to return, between 0 and 100. Defaults to 100.
+        :param offset: The number of previous results. Defaults to 0.
+        :param index: The index to search on. Defaults to "relevance". Can be "downloads", "follows", "newest",
+        "updated", "relevance".
+        :param project_type: The project type. Only `mod` is supported at the moment.
+        :param categories: The categories to search in. Can also include loaders.
+        :param loaders: The loaders to look for. Gets merged with `categories`.
+        :param client_side: Whether to include or exclude client-side mods.
+        :param server_side: Whether to include or exclude server-side mods.
+        :param open_source: Whether to include or exclude open-source mods.
+        :return: A page of projects.
+        """
+        if project_type is None:
+            project_type = ["mod"]
+        else:
+            if project_type != ["mod"]:
+                raise ValueError("Only project_type 'mod' is supported at the moment.")
+        params = {
+            "query": query,
+            "limit": limit,
+            "offset": offset,
+            "index": index,
+            "facets": [["server_side!=unsupported"]],
+        }
+
+        if project_type:
+            for ptype in project_type:
+                params["facets"].append([f"project_type:{ptype}"])
+
+        if categories:
+            for category in categories:
+                params["facets"].append([f"categories:{category}"])
+
+        if loaders:
+            for loader in loaders:
+                params["facets"].append([f"categories:{loader}"])
+
+        if open_source is not None:
+            params["facets"].append([f"open_source:{open_source}"])
+
+        facets = json.dumps(params["facets"])
+        params["facets"] = facets
+        return self.get("/search", params=params)["hits"]
+
+    def cache_get_project(self, config: dict, project_id: str):
+        if project_id in config["mods"]:
+            return config["mods"][project_id]["project"]
+        return self.get_project(project_id)
+
+    def cache_get_version(self, config: dict, project_id: str, version_id: str = None):
+        if project_id in config["mods"]:
+            return config["mods"][project_id]["version"]
+        if version_id:
+            return self.get_version(project_id, version_id)
+        raise ValueError("No version specified and no cached version found.")
