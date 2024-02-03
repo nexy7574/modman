@@ -684,7 +684,7 @@ def search(sort_by: str, page: int, limit: int, query: str):
     except RuntimeError:
         response = api.get("https://meta.fabricmc.net/v2/versions/game/intermediary")
         response = list(filter(lambda x: x["version"].count(".") == 2 and x["stable"], response))
-        config = {"modman": {"server": {"type": "fabric", "version": response[0]["version"]}}}
+        config = {"modman": {"server": {"type": "fabric", "version": response[0]["version"]}}, "mods": []}
         logging.info(
             "Failed to read modman config, using latest Minecraft version (%s) with fabric.",
             config["modman"]["server"]["version"],
@@ -700,13 +700,14 @@ def search(sort_by: str, page: int, limit: int, query: str):
         server_side=["required", "optional"],
         versions=[config["modman"]["server"]["version"]],
     )
-    table = Table("Title", "ID", "Downloads", "Description", title="Search Results")
+    table = Table("Title", "ID", "Downloads", "Installed", "Description", title="Search Results")
     n = 0
     for result in results:
         table.add_row(
             ("[dim]%s[/]" if n % 2 else "[b]%s[/]") % result["title"],
             result["slug"],
             "{:,}".format(result["downloads"]),
+            "\N{white heavy check mark}" if result["slug"] in config["mods"] else "\N{cross mark}",
             result["description"],
         )
         n += 1
