@@ -82,7 +82,7 @@ If you want to also include mods that are server-side only for some reason, you 
 
 ### Debugging
 
-You can pass `-L DEBUG` to `modman` (e.g. `modman -L DEBUG install fabric-api) to get VERY verbose output.
+You can pass `-L DEBUG` to `modman` (e.g. `modman -L DEBUG install fabric-api`) to get VERY verbose output.
 
 You can pass `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` to `modman` to get different levels of verbosity.
 
