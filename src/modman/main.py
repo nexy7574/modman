@@ -11,6 +11,7 @@ import packaging.version
 from rich.table import Table
 from rich.logging import RichHandler
 from rich.traceback import install
+from rich.markdown import Markdown
 from pathlib import Path
 from rich.progress import Progress, DownloadColumn, TransferSpeedColumn
 from rich.panel import Panel
@@ -70,7 +71,7 @@ def init(
 
     SERVER_VERSION should be the minecraft version of the server, for example, 1.20.2, or 23w18a.
 
-    In order for auto detection to work, you must already have a ./mods/ directory."""
+    In order for auto-detection to work, you must already have a ./mods/ directory."""
     if server_type == "forge":
         logging.error("Forge is not supported.")
         return
@@ -604,31 +605,91 @@ def download_fabric(game_version: str, loader_version: str | None, installer_ver
     is_flag=True,
     help="Whether to show extra release info."
 )
-# @click.option(
-#     "--sort-by",
-#     "-S",
-#     type=click.Choice(["date", "downloads", "changelog-size", "version-number"], case_sensitive=False),
-#     default="date",
-#     help="The field to sort by."
-# )
-# @click.option(
-#     "--sort-direction",
-#     "-D",
-#     type=click.Choice(["asc", "desc"], case_sensitive=False),
-#     default="desc",
-#     help="The direction to sort. Asc is 0-9/A-Z, Desc is 9-0/Z-A."
-# )
+@click.option(
+    "--sort-by",
+    "-S",
+    type=click.Choice(["date", "downloads", "changelog-size", "version-number"], case_sensitive=False),
+    default="date",
+    help="The field to sort by."
+)
+@click.option(
+    "--sort-direction",
+    "-D",
+    type=click.Choice(["asc", "desc"], case_sensitive=False),
+    default="asc",
+    help="The direction to sort. Asc is 0-9/A-Z, Desc is 9-0/Z-A."
+)
+@click.option(
+    "--limit",
+    "-L",
+    type=int,
+    default=10,
+    help="The number of historical versions to show."
+)
+@click.option(
+    "--disable-hyperlinks",
+    "-H",
+    is_flag=True,
+    help="Whether to disable hyperlinks in markdown rendering.",
+    default=False
+)
 @click.argument("mod", type=str, nargs=1, required=True)
 @click.argument("version", type=str, nargs=1, required=False)
 def see_changelog(
         mod: str,
         version: str | None,
         verbose: bool,
-        # sort_by: str,
-        # sort_direction: str
+        sort_by: str,
+        sort_direction: str,
+        limit: int,
+        disable_hyperlinks: bool
 ):
     """Shows the changelog for a mod."""
     now = datetime.datetime.now(datetime.timezone.utc)
+
+    def parse_release_date(v: dict) -> datetime.datetime:
+        d = datetime.datetime.strptime(v["date_published"], "%Y-%m-%dT%H:%M:%S.%fZ")
+        return d.replace(tzinfo=datetime.timezone.utc)
+
+    def sort_by_changelog_size(v: dict) -> int:
+        return len(v["changelog"])
+
+    def sort_by_version_number(v: dict) -> str:
+        return v["version_number"]
+
+    def get_version_panel(v: dict) -> Panel:
+        release_date = parse_release_date(v)
+        match v["version_type"]:
+            case "release":
+                title_colour = "#1BD96A"
+            case "beta":
+                title_colour = "orange"
+            case "alpha":
+                title_colour = "red"
+            case _:
+                title_colour = "blue"
+
+        if verbose:
+            subtitle = [
+                "Released " + good_time(release_date),
+                "Downloads: {:,}".format(v["downloads"] or 0),
+            ]
+            subtitle = " | ".join(subtitle)
+        else:
+            subtitle = None
+        md = Markdown(v["changelog"] or "*No changelog for this version.*", hyperlinks=not disable_hyperlinks)
+        return Panel(
+            md,
+            title="[{1}]{0[id]} - {0[version_number]}[/]".format(v, title_colour),
+            subtitle=subtitle,
+        )
+
+    sort_functions = {
+        "date": lambda vs: parse_release_date(vs).timestamp(),
+        "downloads": lambda vs: vs["downloads"],
+        "changelog-size": sort_by_changelog_size,
+        "version-number": sort_by_version_number
+    }
 
     def good_time(dt: datetime.datetime) -> str:
         if (now - dt).days > 365:
@@ -649,39 +710,34 @@ def see_changelog(
             loader=config["modman"]["server"]["type"],
         )
         pages = []
-        for version in reversed(versions):
-            release_date = datetime.datetime.strptime(version["date_published"], "%Y-%m-%dT%H:%M:%S.%fZ")
-            release_date = release_date.replace(tzinfo=datetime.timezone.utc)
-            match version["version_type"]:
-                case "release":
-                    title_colour = "ul"
-                case "beta":
-                    title_colour = "orange"
-                case "alpha":
-                    title_colour = "red"
-                case _:
-                    title_colour = "blue"
 
-            if verbose:
-                subtitle = [
-                    "Released " + good_time(release_date),
-                    "Downloads: {:,}".format(version["downloads"] or 0),
-                ]
-                subtitle = " | ".join(subtitle)
-            else:
-                subtitle = None
-            panel = Panel(
-                version["changelog"] or "No changelog for this version.",
-                title="[{1}]{0[id]} - {0[version_number]}[/]".format(version, title_colour),
-                subtitle=subtitle
-            )
+        sorted_versions = list(sorted(versions, key=sort_functions[sort_by], reverse=sort_direction == "desc"))
+        # filter out duplicate version numbers
+        seen_version_numbers = set()
+        for version in sorted_versions.copy():
+            if version["version_number"] in seen_version_numbers:
+                sorted_versions.remove(version)
+                continue
+            seen_version_numbers.add(version["version_number"])
+
+        for version in reversed(sorted_versions[:limit]):
+            panel = get_version_panel(version)
             pages.append(panel)
         for page in pages:
             rich.print(page)
             rich.print()
         return
-
-    version_info = api.get_version(mod, version)
-    changelog = version_info.get("changelog", "No changelog available.")
-    rich.print(f"[bold]{mod_info['title']}[/bold] version [bold]{version_info['name']}[/bold]")
-    rich.print(changelog)
+    elif version == "latest":
+        version_info = api.get_versions(
+            mod_info["id"],
+            loader=config["modman"]["server"]["type"],
+        )[0]
+    elif version in ["oldest", "first"]:
+        version_info = api.get_versions(
+            mod_info["id"],
+            loader=config["modman"]["server"]["type"],
+        )[-1]
+    else:
+        version_info = api.get_version(mod_info["id"], version)
+    panel = get_version_panel(version_info)
+    rich.print(panel)
