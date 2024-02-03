@@ -6,12 +6,14 @@ import click
 import rich
 import json
 import logging
+import datetime
 import packaging.version
 from rich.table import Table
 from rich.logging import RichHandler
 from rich.traceback import install
 from pathlib import Path
 from rich.progress import Progress, DownloadColumn, TransferSpeedColumn
+from rich.panel import Panel
 
 from .lib import ModrinthAPI
 
@@ -593,3 +595,93 @@ def download_fabric(game_version: str, loader_version: str | None, installer_ver
     with open(".modman.json", "w") as fd:
         json.dump(config, fd, indent=4)
     rich.print("Updated modman.json server version. You should run `modman update` to update mods.")
+
+
+@main.command("changelog")
+@click.option(
+    "--verbose",
+    "-V",
+    is_flag=True,
+    help="Whether to show extra release info."
+)
+# @click.option(
+#     "--sort-by",
+#     "-S",
+#     type=click.Choice(["date", "downloads", "changelog-size", "version-number"], case_sensitive=False),
+#     default="date",
+#     help="The field to sort by."
+# )
+# @click.option(
+#     "--sort-direction",
+#     "-D",
+#     type=click.Choice(["asc", "desc"], case_sensitive=False),
+#     default="desc",
+#     help="The direction to sort. Asc is 0-9/A-Z, Desc is 9-0/Z-A."
+# )
+@click.argument("mod", type=str, nargs=1, required=True)
+@click.argument("version", type=str, nargs=1, required=False)
+def see_changelog(
+        mod: str,
+        version: str | None,
+        verbose: bool,
+        # sort_by: str,
+        # sort_direction: str
+):
+    """Shows the changelog for a mod."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    def good_time(dt: datetime.datetime) -> str:
+        if (now - dt).days > 365:
+            return f"{round((now - dt).days / 365)} years ago"
+        elif (now - dt).days > 30.5:
+            return f"{round((now - dt).days / 30.5)} months ago"
+        elif (now - dt).days > 7:
+            return f"{round((now - dt).days / 7)} weeks ago"
+        elif (now - dt).days > 0:
+            return f"{(now - dt).days} days ago"
+        return f"{round((now - dt).seconds / 3600)} hours ago"
+    api = ModrinthAPI()
+    config = load_config()
+    mod_info = api.get_project(mod)
+    if version is None:
+        versions = api.get_versions(
+            mod_info["id"],
+            loader=config["modman"]["server"]["type"],
+        )
+        pages = []
+        for version in reversed(versions):
+            release_date = datetime.datetime.strptime(version["date_published"], "%Y-%m-%dT%H:%M:%S.%fZ")
+            release_date = release_date.replace(tzinfo=datetime.timezone.utc)
+            match version["version_type"]:
+                case "release":
+                    title_colour = "ul"
+                case "beta":
+                    title_colour = "orange"
+                case "alpha":
+                    title_colour = "red"
+                case _:
+                    title_colour = "blue"
+
+            if verbose:
+                subtitle = [
+                    "Released " + good_time(release_date),
+                    "Downloads: {:,}".format(version["downloads"] or 0),
+                ]
+                subtitle = " | ".join(subtitle)
+            else:
+                subtitle = None
+            panel = Panel(
+                version["changelog"] or "No changelog for this version.",
+                title="[{1}]{0[id]} - {0[version_number]}[/]".format(version, title_colour),
+                subtitle=subtitle
+            )
+            pages.append(panel)
+        for page in pages:
+            rich.print(page)
+            rich.print()
+        return
+
+    version_info = api.get_version(mod, version)
+    changelog = version_info.get("changelog", "No changelog available.")
+    rich.print(f"[bold]{mod_info['title']}[/bold] version [bold]{version_info['name']}[/bold]")
+    rich.print(changelog)
