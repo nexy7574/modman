@@ -92,6 +92,10 @@ def main(log_level: str, log_file: str | None):
         handler.setLevel("DEBUG")
         logging.getLogger().addHandler(handler)
 
+    if (mods_dir := Path.cwd() / "mods").exists():
+        logger.debug("Found mods directory at %s", mods_dir)
+        logger.debug("Contents: %s", ", ".join(str(x) for x in mods_dir.iterdir()))
+
 
 @main.command("init")
 @click.option("--name", "-n", default=Path.cwd().name)
