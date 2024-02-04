@@ -53,16 +53,30 @@ def load_config():
 
 
 @click.group("modman")
-@click.option("--log-level", "-L", type=str, default="WARNING")
-def main(log_level: str):
+@click.option(
+    "--log-level",
+    "-L",
+    type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], case_sensitive=False),
+    default="WARNING"
+)
+@click.option("--log-file", "-l", type=click.Path(), default=None)
+def main(log_level: str, log_file: str | None):
     if log_level.upper() == "DEBUG":
         install(show_locals=True)
+        if log_file is None:
+            log_file = "./modman.debug.log"
     logging.basicConfig(
         level=logging.getLevelName(log_level.upper()),
         format="%(message)s",
         datefmt="[%X]",
         handlers=[RichHandler(markup=True)],
     )
+
+    if log_file:
+        handler = logging.FileHandler(log_file)
+        handler.setFormatter(logging.Formatter("%(asctime)s:%(levelname)s:%(name)s: %(message)s"))
+        handler.setLevel(logging.getLevelName(log_level.upper()))
+        logging.getLogger().addHandler(handler)
 
 
 @main.command("init")
