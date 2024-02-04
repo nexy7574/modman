@@ -42,10 +42,12 @@ aikars_flags = [
     "-Daikars.new.flags=true",
 ]
 
+logger = logging.getLogger("modman")
+
 
 def load_config():
     if not Path(".modman.json").exists():
-        logging.warning("Could not find modman.json. Have you run `modman init`?")
+        logger.warning("Could not find modman.json. Have you run `modman init`?")
         raise click.Abort("No modman.json found.")
 
     with open(".modman.json", "r") as fd:
@@ -57,9 +59,16 @@ def load_config():
     "--log-level",
     "-L",
     type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], case_sensitive=False),
-    default="WARNING"
+    default="WARNING",
+    envvar="MODMAN_LOG_LEVEL",
 )
-@click.option("--log-file", "-l", type=click.Path(), default=None)
+@click.option(
+    "--log-file",
+    "-l",
+    type=click.Path(),
+    default=None,
+    envvar="MODMAN_LOG_FILE",
+)
 def main(log_level: str, log_file: str | None):
     if log_level.upper() == "DEBUG":
         install(show_locals=True)
@@ -71,6 +80,8 @@ def main(log_level: str, log_file: str | None):
         datefmt="[%X]",
         handlers=[RichHandler(markup=True)],
     )
+    logging.getLogger("hpack.hpack").setLevel("INFO")
+    logging.getLogger("httpcore.http2").setLevel("INFO")
 
     if log_file:
         handler = logging.FileHandler(log_file)
@@ -91,10 +102,10 @@ def init(name: str, auto: bool, server_type: str, server_version: str):
 
     In order for auto-detection to work, you must already have a ./mods/ directory."""
     if server_type == "forge":
-        logging.error("Forge is not fully supported.")
+        logger.warning("Forge is not fully supported.")
     if auto is False and (server_type == "auto" or server_version == "auto"):
-        logging.error("'--no-auto' and '--server-type/-version auto' are mutually exclusive.")
-        return
+        logger.error("'--no-auto' and '--server-type/-version auto' are mutually exclusive.")
+        raise click.Abort()
 
     config_data = {"modman": {"name": name, "server": {"type": server_type, "version": server_version}}, "mods": {}}
 
@@ -102,28 +113,30 @@ def init(name: str, auto: bool, server_type: str, server_version: str):
 
     if auto:
         for jar in Path.cwd().glob("*.jar"):
+            logger.debug("Inspecting jar %r", jar)
             with zipfile.ZipFile(jar) as _zip:
                 if "install.properties" in _zip.namelist():
+                    logger.debug("Found install.properties in %r", jar)
                     with _zip.open("install.properties") as fd:
                         install_properties = fd.read().decode("utf-8").splitlines()
                         changed = False
                         for line in install_properties:
                             if line.startswith("fabric-loader-version="):
                                 config_data["modman"]["server"]["type"] = "fabric"
-                                logging.info("Detected Fabric server.")
+                                logger.info("Detected Fabric server.")
                                 changed = True
                             elif line.startswith("game-version="):
                                 config_data["modman"]["server"]["version"] = line.split("=")[1]
-                                logging.info(
+                                logger.info(
                                     "Detected server version {!r}.".format(config_data["modman"]["server"]["version"])
                                 )
                                 changed = True
                         if not changed:
-                            logging.info("Found install.properties, but could not determine server type.")
+                            logger.info("Found install.properties, but could not determine server type.")
 
         mods_dir = Path.cwd() / "mods"
         if not mods_dir.exists():
-            logging.critical("'mods' directory does not exist. Cannot auto-detect mods.")
+            logger.critical("'mods' directory does not exist. Cannot auto-detect mods.")
             return
 
         for mod in mods_dir.iterdir():
@@ -133,11 +146,19 @@ def init(name: str, auto: bool, server_type: str, server_version: str):
             try:
                 mod_version_info = api.get_version_from_hash(mod)
             except httpx.HTTPStatusError:
-                logging.info(f"File {mod} does not appear to be a mod, or it is not on modrinth.")
+                logger.info(f"File {mod} does not appear to be a mod, or it is not on modrinth.")
                 continue
             else:
                 mod_info = api.get_project(mod_version_info["project_id"])
-                logging.info(f"Detected {mod_info['title']!r} version {mod_version_info['name']!r} from {mod}")
+                primary_file = ModrinthAPI.pick_primary_file(mod_version_info["files"])["filename"]
+                logger.info(f"Detected {mod_info['title']!r} version {mod_version_info['name']!r} from {mod}")
+                if mod.name != primary_file:
+                    logger.warning(
+                        "File %r does not match primary file name %r. Renaming it.",
+                        mod,
+                        primary_file,
+                    )
+                    mod.rename(mod.with_name(primary_file))
                 config_data["mods"][mod_info["slug"]] = {
                     "project": mod_info,
                     "version": mod_version_info,
@@ -158,7 +179,7 @@ def install_mod(mods: tuple[str], optional: bool, reinstall: bool):
     if not mods:
         mods = config["mods"].keys()
         if not mods:
-            logging.critical("No mods specified. Did you mean `modman init`?")
+            logger.critical("No mods specified. Did you mean `modman init`?")
             return
     api = ModrinthAPI()
     collected_mods = []
@@ -169,31 +190,36 @@ def install_mod(mods: tuple[str], optional: bool, reinstall: bool):
             version = "latest"
         mod_info = api.get_project(mod)
         if mod_info["slug"] in config["mods"]:
-            logging.info("Mod %s is already installed. Did you mean `modman update`?" % mod_info["title"])
+            logger.info("Mod %s is already installed. Did you mean `modman update`?" % mod_info["title"])
             if reinstall is False:
                 continue
             version = config["mods"][mod_info["slug"]]["version"]["id"]
         if mod_info.get("server_side") == "unsupported":
-            logging.warning("Mod %s is client-side only, you may not see an effect.", mod_info["title"])
+            logger.warning("Mod %s is client-side only, you may not see an effect.", mod_info["title"])
 
         if version == "latest":
+            logger.info("Version was set to 'latest'. Finding latest version.")
             versions = api.get_versions(
                 mod_info["id"],
                 loader=config["modman"]["server"]["type"],
                 game_version=config["modman"]["server"]["version"],
             )
             if not versions:
-                logging.critical(
+                logger.critical(
                     "Mod %s does not support %s (no versions).",
                     mod_info["title"],
                     config["modman"]["server"]["version"],
                 )
                 continue
+            logger.debug("Found versions: %r", versions)
             version_info = versions[0]
+            logger.debug("Selected version %r as it is the first index.", version_info["name"])
         else:
+            logger.debug("Specific version %r requested. Finding version.")
             version_info = api.get_version(mod_info["id"], version)
+            logger.debug("Found version %r: %r", version_info["name"], version_info)
         if config["modman"]["server"]["version"] not in version_info["game_versions"]:
-            logging.warning(
+            logger.warning(
                 "Mod %s does not support %s, only %s.",
                 mod_info["title"],
                 config["modman"]["server"]["version"],
@@ -201,8 +227,9 @@ def install_mod(mods: tuple[str], optional: bool, reinstall: bool):
             )
             # continue
         if config["modman"]["server"]["type"] not in version_info["loaders"]:
-            logging.warning("Mod %s does not support %s.", mod_info["title"], config["modman"]["server"]["type"])
+            logger.warning("Mod %s does not support %s.", mod_info["title"], config["modman"]["server"]["type"])
             continue
+        logger.debug("Adding %s==%s to the queue.", mod_info["title"], version_info["name"])
         collected_mods.append({"mod": mod_info, "version": version_info})
 
     # Resolve dependencies
@@ -210,24 +237,26 @@ def install_mod(mods: tuple[str], optional: bool, reinstall: bool):
     for mod in collected_mods:
         mod_info = mod["mod"]
         version_info = mod["version"]
+        logger.debug("Resolving dependencies for %s==%s", mod_info["title"], version_info["name"])
         for dependency_info in version_info["dependencies"]:
             if dependency_info["dependency_type"] == "optional" and not optional:
-                logging.info(
+                logger.info(
                     "%s depends on %s==%s, but it is optional.",
                     mod_info["title"],
                     dependency_info["project_id"],
                     dependency_info["version_id"],
                 )
                 continue
-            logging.info(
-                "%s depends on %s==%s", mod_info["title"], dependency_info["project_id"], dependency_info["version_id"]
-            )
             dependency = api.get_project(dependency_info["project_id"])
             dependency_version = api.get_version(dependency_info["project_id"], dependency_info["version_id"])
-            logging.info("Checking for dependency conflicts.")
-            conflicts = api.find_dependency_conflicts(mod_info["id"], version_info["id"], config)
+            logger.info(
+                "%s depends on %s==%s", mod_info["title"], dependency["title"], dependency_version["name"]
+            )
+            logger.info("Checking for dependency version conflicts.")
+            conflicts = api.find_dependency_version_conflicts(mod_info["id"], version_info["id"], config)
             if conflicts:
-                logging.warning("Found dependency conflicts: %s", conflicts)
+                logger.warning("Found dependency conflicts: %s", conflicts)
+            logger.debug("Adding %s==%s to the queue.", dependency["title"], dependency_version["name"])
             queue.append({"mod": dependency, "version": dependency_version})
 
     # Resolve conflicts
@@ -243,7 +272,7 @@ def install_mod(mods: tuple[str], optional: bool, reinstall: bool):
     for item in queue:
         _mod_info = item["mod"]
         _version_info = item["version"]
-        logging.debug("Downloading %s==%s", _mod_info["title"], _version_info["name"])
+        logger.debug("Downloading %s==%s", _mod_info["title"], _version_info["name"])
         # rich.print(f"Downloading {_mod_info['title']} (version {_version_info['name']})")
         api.download_mod(_version_info, Path.cwd() / "mods")
         table.add_row(_mod_info["title"], _version_info["name"])
@@ -271,14 +300,14 @@ def update_mod(mods: tuple[str], game_version: str = None, optional: bool = True
     api = ModrinthAPI()
     config = load_config()
     if not mods:
-        logging.info("No mods specified. Updating all mods.")
+        logger.info("No mods specified. Updating all mods.")
         mods = config["mods"].keys()
 
     to_update = []
     for mod in mods:
         mod_info = api.get_project(mod)
         if mod_info["slug"] not in config["mods"]:
-            logging.warning("Mod %s is not installed.", mod_info["title"])
+            logger.warning("Mod %s is not installed.", mod_info["title"])
             continue
         if game_version is None:
             game_version = config["modman"]["server"]["version"]
@@ -286,11 +315,11 @@ def update_mod(mods: tuple[str], game_version: str = None, optional: bool = True
             mod_info["id"], loader=config["modman"]["server"]["type"], game_version=game_version
         )
         if not versions:
-            logging.critical("Mod %s does not support %s (no versions).", mod_info["title"], game_version)
+            logger.critical("Mod %s does not support %s (no versions).", mod_info["title"], game_version)
             continue
         version_info = versions[0]
         if version_info["id"] == config["mods"][mod_info["slug"]]["version"]["id"]:
-            logging.info("Mod %s is already up to date.", mod_info["title"])
+            logger.info("Mod %s is already up to date.", mod_info["title"])
             continue
         to_update.append(
             {"mod": mod_info, "old_version": config["mods"][mod_info["slug"]]["version"], "new_version": version_info}
@@ -303,22 +332,22 @@ def update_mod(mods: tuple[str], game_version: str = None, optional: bool = True
         version_info = mod["new_version"]
         for dependency_info in version_info["dependencies"]:
             if dependency_info["dependency_type"] == "optional" and not optional:
-                logging.info(
+                logger.info(
                     "%s depends on %s==%s, but it is optional.",
                     mod_info["title"],
                     dependency_info["project_id"],
                     dependency_info["version_id"],
                 )
                 continue
-            logging.info(
+            logger.info(
                 "%s depends on %s==%s", mod_info["title"], dependency_info["project_id"], dependency_info["version_id"]
             )
             dependency = api.get_project(dependency_info["project_id"])
             dependency_version = api.get_version(dependency_info["project_id"], dependency_info["version_id"])
-            logging.info("Checking for dependency conflicts.")
-            conflicts = api.find_dependency_conflicts(mod_info["id"], version_info["id"], config)
+            logger.info("Checking for dependency conflicts.")
+            conflicts = api.find_dependency_version_conflicts(mod_info["id"], version_info["id"], config)
             if conflicts:
-                logging.warning("Found dependency conflicts: %s", conflicts)
+                logger.warning("Found dependency conflicts: %s", conflicts)
             queue.append(
                 {
                     "mod": dependency,
@@ -331,15 +360,18 @@ def update_mod(mods: tuple[str], game_version: str = None, optional: bool = True
         _mod_info = item["mod"]
         _version_info = item["new_version"]
         if _version_info["id"] == item["old_version"]["id"]:
-            logging.warning("Not upgrading %s, already up to date.", _mod_info["title"])
+            logger.warning("Not upgrading %s, already up to date.", _mod_info["title"])
             continue
-        logging.debug("Downloading %s==%s", _mod_info["title"], _version_info["name"])
+        logger.debug("Downloading %s==%s", _mod_info["title"], _version_info["name"])
         api.download_mod(_version_info, Path.cwd() / "mods")
         try:
             primary_file = ModrinthAPI.pick_primary_file(config["mods"][_mod_info["slug"]]["version"]["files"])
-            (Path.cwd() / "mods" / primary_file["filename"]).unlink(True)
+            logger.debug("Removing old version %s", primary_file["filename"])
+            fs_file = Path.cwd() / "mods" / primary_file["filename"]
+            logger.debug("Deleting file %s (upgrade)", fs_file)
+            fs_file.unlink(True)
         except OSError as e:
-            logging.warning("Could not remove old version: %s", e)
+            logger.warning("Could not remove old version: %s", e, exc_info=True)
         config["mods"][_mod_info["slug"]] = {"project": _mod_info, "version": _version_info}
 
     with open(".modman.json", "w") as fd:
@@ -383,11 +415,24 @@ def uninstall(mods: tuple[str], purge: bool):
                     dependency = config["mods"][dependency_info["project_id"]]
                     rich.print(f"Uninstalling dependency {dependency['project']['title']}")
                     primary_file = ModrinthAPI.pick_primary_file(dependency["version"]["files"])
-                    (Path.cwd() / "mods" / primary_file["filename"]).unlink(True)
+                    fs_file = Path.cwd() / "mods" / primary_file["filename"]
+                    try:
+                        fs_file.unlink(True)
+                    except OSError as e:
+                        logger.warning(
+                            "Could not remove dependency file %s (uninstalling): %s",
+                            fs_file.resolve(),
+                            e
+                        )
                     del config["mods"][dependency_info["project_id"]]
         rich.print(f"Uninstalling mod {mod_info['project']['title']}")
         primary_file = ModrinthAPI.pick_primary_file(mod_info["version"]["files"])
-        (Path.cwd() / "mods" / primary_file["filename"]).unlink(True)
+        file = Path.cwd() / "mods" / primary_file["filename"]
+        try:
+            logger.debug("Removing file %s (uninstalling)", file)
+            file.unlink(True)
+        except OSError as e:
+            logger.warning("Could not remove file %s: %s", file, e, exc_info=True)
         del config["mods"][mod]
 
     with open(".modman.json", "w") as fd:
@@ -400,14 +445,24 @@ def uninstall(mods: tuple[str], purge: bool):
 def list_mods():
     """Lists all installed mods and their version."""
     config = load_config()
-    table = Table("Mod", "Version", title=f"Installed Mods (Minecraft {config['modman']['server']['version']})")
+    table = Table(
+        "Mod",
+        "Version",
+        "File",
+        title=f"Installed Mods (Minecraft {config['modman']['server']['version']})"
+    )
     for mod in config["mods"].values():
         file = Path.cwd() / "mods" / ModrinthAPI.pick_primary_file(mod["version"]["files"])["filename"]
         if not file.exists():
-            logging.warning(
+            logger.warning(
                 "File %s does not exist. Was it deleted? Try `modman install -R %s`", file, mod["project"]["slug"]
             )
-        table.add_row(mod["project"]["title"], mod["version"]["name"], style="" if file.exists() else "red")
+        table.add_row(
+            mod["project"]["title"],
+            mod["version"]["name"],
+            str(file.resolve()),
+            style="" if file.exists() else "red"
+        )
     rich.print(table)
 
 
@@ -419,17 +474,17 @@ def create_pack(server_side: bool):
     This will only include client-side mods by default. You can include all mods with the -S flag."""
     config = load_config()
     if not (Path.cwd() / "mods").exists():
-        logging.critical("No mods directory found. Are you in the right directory?")
+        logger.critical("No mods directory found. Are you in the right directory?")
         return
     output_zip = Path.cwd() / (config["modman"]["name"] + ".zip")
 
     with zipfile.ZipFile(output_zip, "w", compresslevel=9) as _zip:
         for mod in config["mods"].values():
             if server_side is False and mod["project"]["client_side"] == "unsupported":
-                logging.info("Skipping server-side mod %s", mod["project"]["title"])
+                logger.info("Skipping server-side mod %s", mod["project"]["title"])
                 continue
             primary_file = ModrinthAPI.pick_primary_file(mod["version"]["files"])
-            logging.info("Appending %s", primary_file["filename"])
+            logger.info("Appending %s", primary_file["filename"])
             _zip.write(Path.cwd() / "mods" / primary_file["filename"], primary_file["filename"])
     rich.print("[green]Created ZIP at %s" % output_zip)
 
@@ -454,7 +509,7 @@ def download_fabric(game_version: str, loader_version: str | None, installer_ver
                 game_version = version["version"]
                 break
         else:
-            logging.critical("Could not find a stable minecraft version.")
+            logger.critical("Could not find a stable minecraft version.")
             return
 
     game_is_stable = game_version.count(".") == 2
@@ -468,7 +523,7 @@ def download_fabric(game_version: str, loader_version: str | None, installer_ver
                 loader_version = version["loader"]["version"]
                 break
         else:
-            logging.critical("Could not find a compatible loader version.")
+            logger.critical("Could not find a compatible loader version.")
             return
 
     if installer_version == "latest":
@@ -480,10 +535,10 @@ def download_fabric(game_version: str, loader_version: str | None, installer_ver
                 installer_version = version["version"]
                 break
         else:
-            logging.critical("Could not find a compatible installer version.")
+            logger.critical("Could not find a compatible installer version.")
             return
 
-    logging.info(
+    logger.info(
         "Downloading Fabric %s for Minecraft %s with Installer version %s",
         loader_version,
         game_version,
@@ -519,7 +574,7 @@ def download_fabric(game_version: str, loader_version: str | None, installer_ver
     try:
         config = load_config()
     except RuntimeError:
-        logging.warning("unable to update modman.json server version, please update manually or re-run init")
+        logger.warning("unable to update modman.json server version, please update manually or re-run init")
         return
     config["modman"]["server"]["type"] = "fabric"
     config["modman"]["server"]["version"] = game_version
@@ -681,16 +736,16 @@ def search(sort_by: str, page: int, limit: int, query: str):
     QUERY is the query to search with. You may need to encapsulate it in "quotes" if it contains spaces.
     """
     if limit <= 0:
-        logging.critical("Limit must be greater than 0.")
+        logger.critical("Limit must be greater than 0.")
         return
     if limit > 100:
-        logging.critical("Limit must not exceed 100.")
+        logger.critical("Limit must not exceed 100.")
         return
 
     api = ModrinthAPI()
     try:
         config = load_config()
-        logging.info(
+        logger.info(
             "Loaded modman config, using Minecraft version %s with server type %s.",
             config["modman"]["server"]["version"],
             config["modman"]["server"]["type"],
@@ -699,7 +754,7 @@ def search(sort_by: str, page: int, limit: int, query: str):
         response = api.get("https://meta.fabricmc.net/v2/versions/game/intermediary")
         response = list(filter(lambda x: x["version"].count(".") == 2 and x["stable"], response))
         config = {"modman": {"server": {"type": "fabric", "version": response[0]["version"]}}, "mods": []}
-        logging.info(
+        logger.info(
             "Failed to read modman config, using latest Minecraft version (%s) with fabric.",
             config["modman"]["server"]["version"],
         )
@@ -793,3 +848,7 @@ def view(mod: str, no_hyperlinks: bool):
     )
 
     rich.print(layout_master)
+
+
+if __name__ == "__main__":
+    main(auto_envvar_prefix="MODMAN")

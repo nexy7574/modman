@@ -45,7 +45,6 @@ class ModrinthAPI:
         self.ratelimit_remaining = 500
 
     def get(self, url: str, params: dict[str, typing.Any] = None) -> dict | list:
-
         if self.ratelimit_remaining == 0:
             self.log.warning("Ratelimit reached, waiting %s seconds", self.ratelimit_reset)
             with Progress() as progress:
@@ -55,6 +54,7 @@ class ModrinthAPI:
                 for i in range(wait_seconds):
                     time.sleep(1)
                     progress.update(task, advance=1)
+        self.log.debug("Ratelimit has %d hits left, resets at %d", self.ratelimit_remaining, self.ratelimit_reset)
         with rich.get_console().status("[cyan dim]GET " + url):
             for i in range(5):
                 try:
@@ -68,13 +68,19 @@ class ModrinthAPI:
         self.ratelimit_reset = int(response.headers.get("x-ratelimit-reset", 0))
         self.ratelimit_remaining = int(response.headers.get("x-ratelimit-remaining", 100))
         if response.status_code == 429:
+            self.log.warning("Request was rate-limited, re-calling.")
             return self.get(url, params)
-        logging.debug(textwrap.shorten(response.text, 10240))
+        self.log.debug(textwrap.shorten(response.text, 10240))
         if response.status_code not in range(200, 300):
             response.raise_for_status()
         return response.json()
 
-    def get_project(self, project_id: str):
+    def get_project(self, project_id: str) -> dict[str, typing.Any]:
+        """
+        Gets a project from Modrinth.
+
+        Project ID can be the slug or the ID.
+        """
         return self.get(f"/project/{project_id}")
 
     def get_versions(self, project_id: str, loader: str = None, game_version: str = None, release_only: bool = True):
@@ -118,7 +124,7 @@ class ModrinthAPI:
             if real_copy:
                 result = real_copy
             else:
-                self.log.warning("No release versions found for %s - permitting pre-release versions", project_id)
+                self.log.debug("No release versions found for %s - permitting pre-release versions", project_id)
 
         self.log.debug("Got the following versions after filtering for %s: %s", project_id, result)
         return result
@@ -140,6 +146,7 @@ class ModrinthAPI:
                 while chunk := fd.read(8192):
                     file_hash.update(chunk)
             file_hash = file_hash.hexdigest()
+            self.log.debug("Generated %s hash for %s: %s", algorithm, file, file_hash)
 
         if not isinstance(file_hash, str):
             raise TypeError("file_hash must be a string or pathlib.Path")
@@ -155,6 +162,12 @@ class ModrinthAPI:
 
     def download_mod(self, version: dict, directory: pathlib.Path, *, progress: Progress = None):
         file = self.pick_primary_file(version["files"])
+        self.log.info(
+            "Downloading %s to %s for version %r",
+            file["filename"],
+            directory,
+            version["version_number"]
+        )
         if not directory.exists():
             directory.mkdir(parents=True)
 
@@ -164,7 +177,7 @@ class ModrinthAPI:
         cache_file = fs_file = cache_dir / file["filename"]
         if cache_file.exists() is False or (cache_file.stat().st_ctime + 1209600) < time.time():
             # If it doesn't exist, download it
-            self.log.info("Downloading %s", file["filename"])
+            self.log.info("Downloading %s - Does not exist in cache, or is stale.", file["filename"])
             with self.http.stream("GET", file["url"]) as response:
                 with fs_file.open("wb") as fd:
                     if progress is None:
@@ -176,28 +189,36 @@ class ModrinthAPI:
                             "Downloading " + file["filename"], total=int(response.headers.get("content-length", 0))
                         )
                         for chunk in response.iter_bytes():
+                            self.log.debug("Read %d bytes of %s", len(chunk), file["filename"])
                             fd.write(chunk)
                             progress.update(task, advance=len(chunk))
         else:
             self.log.info("Using cached file: %s", fs_file.resolve())
 
-        self.log.info("Checking file hash")
+        self.log.info("Checking file hash for %s", file["filename"])
         fs_hash = hashlib.new("sha512")
         with rich_open(fs_file, "rb", description="Generating SHA512 sum", transient=True) as fd:
             while chunk := fd.read(8192):
                 fs_hash.update(chunk)
         if fs_hash.hexdigest() != file["hashes"]["sha512"]:
             self.log.critical("File hash mismatch.")
+            self.log.debug("Hash conflict: %r on disk, %r expected", fs_hash.hexdigest(), file["hashes"]["sha512"])
+            self.log.debug("Unlinking file: %s", fs_file.resolve())
             fs_file.unlink(True)
             raise RuntimeError("File hash does not match")
 
         # Move to the mod directory
         fs_mod = directory / file["filename"]
-        self.log.debug("Moving %s -> %s", fs_file, fs_mod)
+        self.log.debug("Copying %s -> %s", fs_file, fs_mod)
         shutil.copy(fs_file, fs_mod)
         self.log.info("Downloaded %s", file["filename"])
 
-    def find_dependency_conflicts(self, project_id: str, version_id: str, config: dict) -> list[dict[str, str]]:
+    def find_dependency_version_conflicts(
+            self,
+            project_id: str,
+            version_id: str,
+            config: dict
+    ) -> list[dict[str, str]]:
         conflicts = []
         for mod in config["mods"].values():
             version_info = mod["version"]
@@ -210,6 +231,13 @@ class ModrinthAPI:
                         self.log.info("Project %s has no version specification, assuming it supports all.", project_id)
                         continue
                     if dependency["version_id"] != version_id:
+                        self.log.debug(
+                            "Project %s has a conflict with %s, %s != %s",
+                            project_id,
+                            mod["project"]["id"],
+                            version_id,
+                            dependency["version_id"],
+                        )
                         conflicts.append(
                             {
                                 "project_id": project_id,
@@ -243,6 +271,7 @@ class ModrinthAPI:
         :param offset: The number of previous results. Defaults to 0.
         :param index: The index to search on. Defaults to "relevance". Can be "downloads", "follows", "newest",
         "updated", "relevance".
+        :param versions: The game versions to search for.
         :param project_type: The project type. Only `mod` is supported at the moment.
         :param categories: The categories to search in. Can also include loaders.
         :param loaders: The loaders to look for. Gets merged with `categories`.
@@ -287,14 +316,16 @@ class ModrinthAPI:
         params["facets"] = facets
         return self.get("/search", params=params)["hits"]
 
-    def cache_get_project(self, config: dict, project_id: str):
+    def cache_get_project(self, config: dict, project_id: str) -> dict[str, typing.Any]:
         if project_id in config["mods"]:
             return config["mods"][project_id]["project"]
+        self.log.debug("Project %s not found in cache, fetching from Modrinth.", project_id)
         return self.get_project(project_id)
 
     def cache_get_version(self, config: dict, project_id: str, version_id: str = None):
         if project_id in config["mods"]:
             return config["mods"][project_id]["version"]
         if version_id:
+            self.log.debug("Version %s not found in cache, fetching from Modrinth.", version_id)
             return self.get_version(project_id, version_id)
         raise ValueError("No version specified and no cached version found.")
