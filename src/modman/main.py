@@ -2,9 +2,11 @@ import datetime
 import json
 import logging
 import os
+import tempfile
 import zipfile
 from pathlib import Path
 
+import appdirs
 import click
 import httpx
 import packaging.version
@@ -70,10 +72,10 @@ def load_config():
     envvar="MODMAN_LOG_FILE",
 )
 def main(log_level: str, log_file: str | None):
+    if log_file is None:
+        log_file = appdirs.user_cache_dir("modman") / "modman.log"
     if log_level.upper() == "DEBUG":
         install(show_locals=True)
-        if log_file is None:
-            log_file = "./modman.debug.log"
     logging.basicConfig(
         level=logging.getLevelName(log_level.upper()),
         format="%(message)s",
@@ -82,11 +84,12 @@ def main(log_level: str, log_file: str | None):
     )
     logging.getLogger("hpack.hpack").setLevel("INFO")
     logging.getLogger("httpcore.http2").setLevel("INFO")
+    logger.debug("Silenced hpack.hpack and httpcore.http2 logs as they've way too verbose.")
 
     if log_file:
         handler = logging.FileHandler(log_file)
         handler.setFormatter(logging.Formatter("%(asctime)s:%(levelname)s:%(name)s: %(message)s"))
-        handler.setLevel(logging.getLevelName(log_level.upper()))
+        handler.setLevel("DEBUG")
         logging.getLogger().addHandler(handler)
 
 
