@@ -73,7 +73,7 @@ def load_config():
 )
 def main(log_level: str, log_file: str | None):
     if log_file is None:
-        log_file = appdirs.user_cache_dir("modman") / "modman.log"
+        log_file = Path(appdirs.user_cache_dir("modman")) / "modman.log"
     if log_level.upper() == "DEBUG":
         install(show_locals=True)
     logging.basicConfig(
