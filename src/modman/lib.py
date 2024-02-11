@@ -15,7 +15,7 @@ import httpx
 import rich
 from rich.progress import DownloadColumn, Progress, TransferSpeedColumn
 from rich.progress import open as rich_open
-from rich.progress import track
+from rich.prompt import Prompt
 
 try:
     import h2
@@ -329,3 +329,48 @@ class ModrinthAPI:
             self.log.debug("Version %s not found in cache, fetching from Modrinth.", version_id)
             return self.get_version(project_id, version_id)
         raise ValueError("No version specified and no cached version found.")
+
+    def interactive_search(self, query: str, config: dict) -> dict | None:
+        """
+        Interactively searches Modrinth for a project.
+        """
+        mod_info = None
+        results = self.search(
+            query,
+            versions=[config["modman"]["server"]["version"]],
+            loaders=[config["modman"]["server"]["type"]],
+            server_side=["required", "optional"],
+            limit=20
+        )
+        if not results:
+            rich.print(f"[red]No mod with the slug, ID, or name {query!r} was found.")
+            return
+        elif len(results) == 1:
+            self.log.info("Found mod %r by name.", results[0]["title"])
+            mod_info = results[0]
+        else:
+            while True:
+                for i, item in enumerate(results, start=1):
+                    rich.print(f"{i}. {item['title']} ({item['slug']})")
+                p: str | int = Prompt.ask(
+                    "Multiple mods were found with that name. Please select the one you want to install"
+                )
+                if p.isdigit():
+                    p = int(p)
+                    if p not in range(len(results)):
+                        rich.print("[red]Invalid selection.")
+                        rich.print()
+                        continue
+                    mod_info = results[p - 1]
+                    break
+                else:
+                    for _mod in results:
+                        if p.lower() in _mod["title"].lower() or p.lower() in _mod["slug"].lower():
+                            mod_info = _mod
+                            break
+                    else:
+                        rich.print("Invalid selection.")
+                        rich.print()
+                        continue
+
+        return mod_info

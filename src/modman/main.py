@@ -17,32 +17,33 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.progress import DownloadColumn, Progress, TransferSpeedColumn
 from rich.table import Table
+from rich.prompt import Prompt
 from rich.traceback import install
 
 from .lib import ModrinthAPI
 
-aikars_flags = [
-    "-XX:+UseG1GC",
-    "-XX:+ParallelRefProcEnabled",
-    "-XX:MaxGCPauseMillis=200",
-    "-XX:+UnlockExperimentalVMOptions",
-    "-XX:+DisableExplicitGC",
-    "-XX:+AlwaysPreTouch",
-    "-XX:G1NewSizePercent=30",
-    "-XX:G1MaxNewSizePercent=40",
-    "-XX:G1HeapRegionSize=8M",
-    "-XX:G1ReservePercent=20",
-    "-XX:G1HeapWastePercent=5",
-    "-XX:G1MixedGCCountTarget=4",
-    "-XX:InitiatingHeapOccupancyPercent=15",
-    "-XX:G1MixedGCLiveThresholdPercent=90",
-    "-XX:G1RSetUpdatingPauseTimePercent=5",
-    "-XX:SurvivorRatio=32",
-    "-XX:+PerfDisableSharedMem",
-    "-XX:MaxTenuringThreshold=1",
-    "-Dusing.aikars.flags=https://mcflags.emc.gs",
-    "-Daikars.new.flags=true",
-]
+# aikars_flags = [
+#     "-XX:+UseG1GC",
+#     "-XX:+ParallelRefProcEnabled",
+#     "-XX:MaxGCPauseMillis=200",
+#     "-XX:+UnlockExperimentalVMOptions",
+#     "-XX:+DisableExplicitGC",
+#     "-XX:+AlwaysPreTouch",
+#     "-XX:G1NewSizePercent=30",
+#     "-XX:G1MaxNewSizePercent=40",
+#     "-XX:G1HeapRegionSize=8M",
+#     "-XX:G1ReservePercent=20",
+#     "-XX:G1HeapWastePercent=5",
+#     "-XX:G1MixedGCCountTarget=4",
+#     "-XX:InitiatingHeapOccupancyPercent=15",
+#     "-XX:G1MixedGCLiveThresholdPercent=90",
+#     "-XX:G1RSetUpdatingPauseTimePercent=5",
+#     "-XX:SurvivorRatio=32",
+#     "-XX:+PerfDisableSharedMem",
+#     "-XX:MaxTenuringThreshold=1",
+#     "-Dusing.aikars.flags=https://mcflags.emc.gs",
+#     "-Daikars.new.flags=true",
+# ]
 
 logger = logging.getLogger("modman")
 
@@ -182,6 +183,7 @@ def init(name: str, auto: bool, server_type: str, server_version: str):
 @click.option("--optional/--no-optional", "-O/-N", default=False, help="Whether to install optional dependencies.")
 def install_mod(mods: tuple[str], optional: bool, reinstall: bool):
     """Installs a mod."""
+    global mod_info
     config = load_config()
     if not mods:
         mods = config["mods"].keys()
@@ -195,7 +197,20 @@ def install_mod(mods: tuple[str], optional: bool, reinstall: bool):
             mod, version = mod.split("==")
         else:
             version = "latest"
-        mod_info = api.get_project(mod)
+        try:
+            mod_info = api.get_project(mod)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                logger.warning("Mod %r is invalid - searching by name")
+                mod_info = None
+                while mod_info is None:
+                    try:
+                        mod_info = api.interactive_search(mod, config)
+                    except KeyboardInterrupt:
+                        raise click.Abort()
+            else:
+                raise
+
         if mod_info["slug"] in config["mods"]:
             logger.info("Mod %s is already installed. Did you mean `modman update`?" % mod_info["title"])
             if reinstall is False:
