@@ -252,6 +252,7 @@ def install_mod(mods: tuple[str], optional: bool, reinstall: bool):
                 while mod_info is None:
                     try:
                         mod_info = api.interactive_search(mod, config)
+                        mod_info = api.get_project(mod_info['slug'])
                     except KeyboardInterrupt:
                         raise click.Abort()
             else:
