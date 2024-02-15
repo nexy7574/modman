@@ -472,12 +472,13 @@ def uninstall(mods: tuple[str], purge: bool):
     config = load_config()
 
     mod_identifiers = {}
-    for mod in config["mods"]:
-        mod_identifiers[mod["project"]["id"]] = [
+    for key, mod in config["mods"].items():
+        mod_identifiers[key] = [
             mod["project"]["id"],
             mod["project"]["title"],
-            mod["project"]["title"],
+            mod["project"]["slug"],
             ModrinthAPI.pick_primary_file(mod["version"]["files"])["filename"],
+            key
         ]
 
     identifiers_flat = [item for value_pack in mod_identifiers.values() for item in value_pack]
