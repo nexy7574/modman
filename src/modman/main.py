@@ -2,9 +2,10 @@ import datetime
 import json
 import logging
 import os
-import tempfile
 import zipfile
 from pathlib import Path
+from importlib.metadata import version as importlib_version
+from packaging.version import parse as parse_version
 
 import appdirs
 import click
@@ -21,28 +22,28 @@ from rich.traceback import install
 
 from .lib import ModrinthAPI
 
-aikars_flags = [
-    "-XX:+UseG1GC",
-    "-XX:+ParallelRefProcEnabled",
-    "-XX:MaxGCPauseMillis=200",
-    "-XX:+UnlockExperimentalVMOptions",
-    "-XX:+DisableExplicitGC",
-    "-XX:+AlwaysPreTouch",
-    "-XX:G1NewSizePercent=30",
-    "-XX:G1MaxNewSizePercent=40",
-    "-XX:G1HeapRegionSize=8M",
-    "-XX:G1ReservePercent=20",
-    "-XX:G1HeapWastePercent=5",
-    "-XX:G1MixedGCCountTarget=4",
-    "-XX:InitiatingHeapOccupancyPercent=15",
-    "-XX:G1MixedGCLiveThresholdPercent=90",
-    "-XX:G1RSetUpdatingPauseTimePercent=5",
-    "-XX:SurvivorRatio=32",
-    "-XX:+PerfDisableSharedMem",
-    "-XX:MaxTenuringThreshold=1",
-    "-Dusing.aikars.flags=https://mcflags.emc.gs",
-    "-Daikars.new.flags=true",
-]
+# aikars_flags = [
+#     "-XX:+UseG1GC",
+#     "-XX:+ParallelRefProcEnabled",
+#     "-XX:MaxGCPauseMillis=200",
+#     "-XX:+UnlockExperimentalVMOptions",
+#     "-XX:+DisableExplicitGC",
+#     "-XX:+AlwaysPreTouch",
+#     "-XX:G1NewSizePercent=30",
+#     "-XX:G1MaxNewSizePercent=40",
+#     "-XX:G1HeapRegionSize=8M",
+#     "-XX:G1ReservePercent=20",
+#     "-XX:G1HeapWastePercent=5",
+#     "-XX:G1MixedGCCountTarget=4",
+#     "-XX:InitiatingHeapOccupancyPercent=15",
+#     "-XX:G1MixedGCLiveThresholdPercent=90",
+#     "-XX:G1RSetUpdatingPauseTimePercent=5",
+#     "-XX:SurvivorRatio=32",
+#     "-XX:+PerfDisableSharedMem",
+#     "-XX:MaxTenuringThreshold=1",
+#     "-Dusing.aikars.flags=https://mcflags.emc.gs",
+#     "-Daikars.new.flags=true",
+# ]
 
 logger = logging.getLogger("modman")
 
@@ -56,7 +57,7 @@ def load_config():
         return json.load(fd)
 
 
-@click.group("modman")
+@click.group("modman", invoke_without_command=True)
 @click.option(
     "--log-level",
     "-L",
@@ -71,7 +72,14 @@ def load_config():
     default=None,
     envvar="MODMAN_LOG_FILE",
 )
-def main(log_level: str, log_file: str | None):
+@click.option(
+    "_version",
+    "--version",
+    "-V",
+    is_flag=True,
+    help="Prints the version of modman and checks for updates."
+)
+def main(log_level: str, log_file: str | None, _version: bool):
     if log_file is None:
         log_file = Path(appdirs.user_cache_dir("modman")) / "modman.log"
     if log_level.upper() == "DEBUG":
@@ -95,6 +103,45 @@ def main(log_level: str, log_file: str | None):
     if (mods_dir := Path.cwd() / "mods").exists():
         logger.debug("Found mods directory at %s", mods_dir)
         logger.debug("Contents: %s", ", ".join(str(x) for x in mods_dir.iterdir()))
+
+    if _version:
+        mm_version = parse_version(importlib_version("modman"))
+        logger.info("ModMan Version: %s", mm_version)
+        rich.print("ModMan is running version %s" % mm_version)
+        logger.debug("Checking for updates...")
+        local_version = mm_version.local
+        if not local_version.startswith("g"):
+            logger.debug("Local version is not a git release. Update check is not yet implemented.")
+        else:
+            commit_hash = local_version[1:8]
+            commits_git = httpx.get("https://api.github.com/repos/nexy7574/modman/commits")
+            if commits_git.status_code != 200:
+                logger.warning("Could not check for updates: %s", commits_git.text)
+            else:
+                commits = commits_git.json()
+                latest_commit = commits[0]
+                if latest_commit["sha"][:7] != commit_hash:
+                    n = 0
+                    for commit in commits:
+                        if commit["sha"][:7] == commit_hash:
+                            break
+                        n += 1
+                    else:
+                        n = -1
+
+                    if n > -1:
+                        logger.warning(
+                            "You are not running the latest version of ModMan. You are on %s (%d commits behind), "
+                            "the latest is %s",
+                            commit_hash,
+                            n,
+                            latest_commit["sha"][:7],
+                        )
+                    else:
+                        # Probably a dev version
+                        logger.warning("You do not appear to be running a tracked version of modman.")
+                else:
+                    logger.info("You are running the latest version of ModMan.")
 
 
 @main.command("init")
@@ -182,6 +229,7 @@ def init(name: str, auto: bool, server_type: str, server_version: str):
 @click.option("--optional/--no-optional", "-O/-N", default=False, help="Whether to install optional dependencies.")
 def install_mod(mods: tuple[str], optional: bool, reinstall: bool):
     """Installs a mod."""
+    global mod_info
     config = load_config()
     if not mods:
         mods = config["mods"].keys()
@@ -195,7 +243,21 @@ def install_mod(mods: tuple[str], optional: bool, reinstall: bool):
             mod, version = mod.split("==")
         else:
             version = "latest"
-        mod_info = api.get_project(mod)
+        try:
+            mod_info = api.get_project(mod)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                logger.warning("Mod %r is invalid - searching by name")
+                mod_info = None
+                while mod_info is None:
+                    try:
+                        mod_info = api.interactive_search(mod, config)
+                        mod_info = api.get_project(mod_info['slug'])
+                    except KeyboardInterrupt:
+                        raise click.Abort()
+            else:
+                raise
+
         if mod_info["slug"] in config["mods"]:
             logger.info("Mod %s is already installed. Did you mean `modman update`?" % mod_info["title"])
             if reinstall is False:
