@@ -401,10 +401,24 @@ def uninstall(mods: tuple[str], purge: bool):
         return
     config = load_config()
 
+    mod_identifiers = {}
+    for mod in config["mods"]:
+        mod_identifiers[mod["project"]["id"]] = [
+            mod["project"]["id"],
+            mod["project"]["title"],
+            mod["project"]["title"],
+            ModrinthAPI.pick_primary_file(mod["version"]["files"])["filename"],
+        ]
+
     for mod in mods:
-        if mod not in config["mods"]:
+        if mod not in [item for value_pack in mod_identifiers.values() for item in value_pack]:
             rich.print(f"[red]Mod {mod} is not installed.")
             continue
+        else:
+            for key, values in mod_identifiers.items():
+                if mod in values:
+                    mod = key
+                    break
         mod_info = config["mods"][mod]
         if purge:
             for dependency_info in mod_info["version"]["dependencies"]:

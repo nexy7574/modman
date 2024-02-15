@@ -75,6 +75,10 @@ class ModrinthAPI:
             response.raise_for_status()
         return response.json()
 
+    def get_projects_bulk(self, project_ids: list[str]) -> list[dict[str, typing.Any]]:
+        """Fetches multiple projects at once."""
+        return self.get("/projects", params={"ids": project_ids})
+
     def get_project(self, project_id: str) -> dict[str, typing.Any]:
         """
         Gets a project from Modrinth.
@@ -135,6 +139,10 @@ class ModrinthAPI:
             versions = self.get_versions(project_id)
             return versions[0]
         return self.get(f"/project/{project_id}/version/{version_id}")
+
+    def check_slug(self, slug_or_id: str) -> str:
+        """Checks if a slug is valid, and returns the project ID."""
+        return self.get(f"/project/{slug_or_id}/check")["id"]
 
     def get_version_from_hash(
         self, file_hash: pathlib.Path | str | None = None, algorithm: typing.Literal["sha1", "sha512"] = "sha512"
