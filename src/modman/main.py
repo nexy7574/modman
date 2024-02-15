@@ -79,7 +79,8 @@ def load_config():
     is_flag=True,
     help="Prints the version of modman and checks for updates."
 )
-def main(log_level: str, log_file: str | None, _version: bool):
+@click.pass_context
+def main(ctx: click.Context, log_level: str, log_file: str | None, _version: bool):
     if log_file is None:
         log_file = Path(appdirs.user_cache_dir("modman")) / "modman.log"
     if log_level.upper() == "DEBUG":
@@ -142,6 +143,14 @@ def main(log_level: str, log_file: str | None, _version: bool):
                         logger.warning("You do not appear to be running a tracked version of modman.")
                 else:
                     logger.info("You are running the latest version of ModMan.")
+
+    if ctx.invoked_subcommand is not None:
+        logger.debug(
+            "Running command: %s with args %r and kwargs %r",
+            ctx.invoked_subcommand,
+            ctx.args,
+            ctx.params,
+        )
 
 
 @main.command("init")
@@ -229,7 +238,6 @@ def init(name: str, auto: bool, server_type: str, server_version: str):
 @click.option("--optional/--no-optional", "-O/-N", default=False, help="Whether to install optional dependencies.")
 def install_mod(mods: tuple[str], optional: bool, reinstall: bool):
     """Installs a mod."""
-    global mod_info
     config = load_config()
     if not mods:
         mods = config["mods"].keys()
@@ -472,8 +480,11 @@ def uninstall(mods: tuple[str], purge: bool):
             ModrinthAPI.pick_primary_file(mod["version"]["files"])["filename"],
         ]
 
+    identifiers_flat = [item for value_pack in mod_identifiers.values() for item in value_pack]
+    logger.debug("Mod identifiers mapping: %r", mod_identifiers)
+    logger.debug("Flat mod identifiers array: %r", identifiers_flat)
     for mod in mods:
-        if mod not in [item for value_pack in mod_identifiers.values() for item in value_pack]:
+        if mod not in identifiers_flat:
             rich.print(f"[red]Mod {mod} is not installed.")
             continue
         else:
