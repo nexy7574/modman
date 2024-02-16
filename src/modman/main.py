@@ -69,7 +69,7 @@ def load_config():
     "--log-file",
     "-l",
     type=click.Path(),
-    default=None,
+    default=str(Path(appdirs.user_cache_dir("modman")) / "modman.log"),
     envvar="MODMAN_LOG_FILE",
 )
 @click.option(
