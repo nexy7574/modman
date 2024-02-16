@@ -98,7 +98,7 @@ def main(ctx: click.Context, log_level: str, log_file: str | None, _version: boo
     if log_file:
         handler = logging.FileHandler(log_file)
         handler.setFormatter(logging.Formatter("%(asctime)s:%(levelname)s:%(name)s: %(message)s"))
-        handler.setLevel("DEBUG")
+        handler.setLevel(logging.DEBUG)
         logging.getLogger().addHandler(handler)
 
     if (mods_dir := Path.cwd() / "mods").exists():
@@ -485,6 +485,8 @@ def uninstall(mods: tuple[str], purge: bool):
     logger.debug("Mod identifiers mapping: %r", mod_identifiers)
     logger.debug("Flat mod identifiers array: %r", identifiers_flat)
     for mod in mods:
+        if Path(mod).exists():
+            mod = Path(mod).name
         if mod not in identifiers_flat:
             rich.print(f"[red]Mod {mod} is not installed.")
             continue
