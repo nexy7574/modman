@@ -539,25 +539,45 @@ def uninstall(mods: tuple[str], purge: bool):
 
 
 @main.command("list")
-def list_mods():
+@click.option(
+    "--verbose",
+    "-V",
+    help="Shows additional information about the mods.",
+    is_flag=True
+)
+def list_mods(verbose: bool):
     """Lists all installed mods and their version."""
     config = load_config()
+    headers = [
+        "Name",
+        "Version",
+        "File"
+    ]
+    if verbose:
+        headers.append("Size")
+        headers.insert(1, "ID")
     table = Table(
         "Mod",
         "Version",
         "File",
         title=f"Installed Mods (Minecraft {config['modman']['server']['version']})"
     )
-    for mod in config["mods"].values():
+    for mod in sorted(config["mods"].values(), key=lambda v: v["project"]["title"]):
         file = Path.cwd() / "mods" / ModrinthAPI.pick_primary_file(mod["version"]["files"])["filename"]
         if not file.exists():
             logger.warning(
                 "File %s does not exist. Was it deleted? Try `modman install -R %s`", file, mod["project"]["slug"]
             )
-        table.add_row(
+        values = [
             mod["project"]["title"],
-            mod["version"]["name"],
-            str(file.resolve()),
+            mod["version"]["version_number"],
+            str(file.resolve())
+        ]
+        if verbose:
+            values.insert(1, mod["project"]["id"])
+            values.append(str(file.stat().st_size))
+        table.add_row(
+            *values,
             style="" if file.exists() else "red"
         )
     rich.print(table)
