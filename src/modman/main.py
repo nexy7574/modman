@@ -255,7 +255,7 @@ def install_mod(mods: tuple[str], optional: bool, reinstall: bool):
             mod_info = api.get_project(mod)
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
-                logger.warning("Mod %r is invalid - searching by name")
+                logger.warning("Mod %r is invalid - searching by name", mod)
                 mod_info = None
                 while mod_info is None:
                     try:

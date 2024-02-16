@@ -361,7 +361,7 @@ class ModrinthAPI:
                 for i, item in enumerate(results, start=1):
                     rich.print(f"{i}. {item['title']} ({item['slug']})")
                 p: str | int = Prompt.ask(
-                    "Multiple mods were found with that name. Please select the one you want to install"
+                    "Multiple mods were found with the name %r. Please select the one you want to install" % query
                 )
                 if p.isdigit():
                     p = int(p)
