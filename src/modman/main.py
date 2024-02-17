@@ -58,7 +58,7 @@ logger.addHandler(file_handler)
 
 def load_config() -> tuple[dict, Path]:
     cwd = Path.cwd()
-    for parent in cwd.parents:
+    for parent in [cwd, cwd.parents]:
         p = parent / ".modman.json"
         if not p.exists():
             continue
