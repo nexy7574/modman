@@ -31,7 +31,7 @@ class ModrinthAPI:
         try:
             _version = importlib.metadata.version("modman")
         except importlib.metadata.PackageNotFoundError:
-            _version = "1.0.0.dev1"
+            _version = "0.1.dev1"
         self.http = httpx.Client(
             base_url="https://api.modrinth.com/v2",
             headers={
