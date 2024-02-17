@@ -2,6 +2,7 @@ import datetime
 import json
 import logging
 import os
+import time
 import zipfile
 from pathlib import Path
 from importlib.metadata import version as importlib_version
@@ -129,10 +130,15 @@ def main(ctx: click.Context, log_level: str, log_file: str | None, _version: boo
         logger.debug("Found mods directory at %s", mods_dir)
         logger.debug("Contents: %s", ", ".join(str(x) for x in mods_dir.iterdir()))
 
-    if _version:
+    if (last_update_file := Path(appdirs.user_cache_dir("modman")) / ".last_update_ts").exists():
+        last_update_ts = float(last_update_file.read_text() or "0.0")
+    else:
+        last_update_ts = 0.0
+    if _version or (time.time() - last_update_ts) > 806400:
         mm_version = parse_version(importlib_version("modman"))
         logger.info("ModMan Version: %s", mm_version)
-        rich.print("ModMan is running version %s" % mm_version)
+        if _version:
+            rich.print("ModMan is running version %s" % mm_version)
         logger.debug("Checking for updates...")
         local_version = mm_version.local
         if not local_version.startswith("g"):
