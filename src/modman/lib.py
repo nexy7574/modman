@@ -43,6 +43,7 @@ class ModrinthAPI:
 
         self.ratelimit_reset = 0
         self.ratelimit_remaining = 500
+        self.project_cache = {}
 
     def get(self, url: str, params: dict[str, typing.Any] = None) -> dict | list:
         if self.ratelimit_remaining == 0:
@@ -54,7 +55,11 @@ class ModrinthAPI:
                 for i in range(wait_seconds):
                     time.sleep(1)
                     progress.update(task, advance=1)
-        self.log.debug("Ratelimit has %d hits left, resets at %d", self.ratelimit_remaining, self.ratelimit_reset)
+        self.log.debug(
+            "Ratelimit has %d hits left, resets in %d seconds",
+            self.ratelimit_remaining,
+            self.ratelimit_reset
+        )
         with rich.get_console().status("[cyan dim]GET " + url):
             for i in range(5):
                 try:
@@ -85,10 +90,16 @@ class ModrinthAPI:
 
         Project ID can be the slug or the ID.
         """
-        return self.get(f"/project/{project_id}")
+        v = self.get(f"/project/{project_id}")
+        self.project_cache[project_id] = v
+        return v
 
     def get_versions(self, project_id: str, loader: str = None, game_version: str = None, release_only: bool = True):
         params = {}
+        if project_id in self.project_cache:
+            name = repr(self.project_cache[project_id]["title"])
+        else:
+            name = project_id
 
         if loader is not None:
             params["loaders"] = [loader]
@@ -105,9 +116,11 @@ class ModrinthAPI:
                     self.log.debug(
                         "Removed %s from %s - invalid game versions (%s)",
                         version["version_number"],
-                        project_id,
+                        name,
                         ", ".join(version["game_versions"]),
                     )
+        else:
+            self.log.debug("No game version was specified in get_versions, not filtering for game versions.")
         if loader:
             for version in result.copy():
                 if loader not in version["loaders"]:
@@ -115,23 +128,26 @@ class ModrinthAPI:
                     self.log.debug(
                         "Removed %s from %s - invalid loaders (%s)",
                         version["version_number"],
-                        project_id,
+                        name,
                         ", ".join(version["loaders"]),
                     )
+        else:
+            self.log.debug("No loader was specified in get_versions, not filtering for loaders.")
 
         if release_only:
             real_copy = result.copy()
             for version in result.copy():
                 if version["version_type"] != "release":
                     real_copy.remove(version)
-                    self.log.debug("Removed %s from %s - pre-release", version["version_number"], project_id)
+                    self.log.debug("Removed %s from %s - pre-release", version["version_number"], name)
             if real_copy:
                 result = real_copy
             else:
-                self.log.debug("No release versions found for %s - permitting pre-release versions", project_id)
+                self.log.debug("No release versions found for %s - permitting pre-release versions", name)
 
-        self.log.debug("Got the following versions after filtering for %s: %s", project_id, result)
-        return result
+        self.log.debug("Got the following versions after filtering for %s: %s", name, result)
+        # Finally, return the results sorted, latest to oldest
+        return list(sorted(result, key=lambda v: v["date_published"], reverse=True))
 
     def get_version(self, project_id: str, version_id: str | None):
         if version_id is None:
@@ -354,7 +370,7 @@ class ModrinthAPI:
             rich.print(f"[red]No mod with the slug, ID, or name {query!r} was found.")
             return
         elif len(results) == 1:
-            self.log.info("Found mod %r by name.", results[0]["title"])
+            self.log.info("Found mod %r by name (exact/sole match).", results[0]["title"])
             mod_info = results[0]
         else:
             while True:

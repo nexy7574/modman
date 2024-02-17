@@ -4,3 +4,4 @@ toml~=0.10
 rich~=13.7
 appdirs~=1.4
 packaging~=23.2
+click-aliases~=1.0
