@@ -2,6 +2,7 @@ import datetime
 import json
 import logging
 import os
+import time
 import zipfile
 from pathlib import Path
 from importlib.metadata import version as importlib_version
@@ -12,6 +13,7 @@ import click
 import httpx
 import packaging.version
 import rich
+from click_aliases import ClickAliasedGroup
 from rich.layout import Layout
 from rich.logging import RichHandler
 from rich.markdown import Markdown
@@ -47,17 +49,40 @@ from .lib import ModrinthAPI
 
 logger = logging.getLogger("modman")
 
+# Create the file debug stream
+file_handler = logging.FileHandler(Path(appdirs.user_cache_dir("modman")) / "modman.log")
+file_handler.setFormatter(logging.Formatter("%(asctime)s:%(levelname)s:%(name)s: %(message)s"))
+file_handler.setLevel(logging.DEBUG)
+logger.addHandler(file_handler)
 
-def load_config():
-    if not Path(".modman.json").exists():
-        logger.warning("Could not find modman.json. Have you run `modman init`?")
+
+def load_config() -> tuple[dict, Path]:
+    cwd = Path.cwd()
+    for parent in [cwd, cwd.parents]:
+        p = parent / ".modman.json"
+        if not p.exists():
+            continue
+        else:
+            break
+    else:
+        logger.warning(
+            f"No ModMan configuration file found (or in any parent up to {cwd.root}). You may need to run `modman init`"
+        )
         raise click.Abort("No modman.json found.")
 
-    with open(".modman.json", "r") as fd:
-        return json.load(fd)
+    with open(p, "r") as fd:
+        data = json.load(fd)
+
+    # Migrations
+    if "root" not in data["modman"]:
+        logger.warning(f"Migrating modman.json - Adding root={p.parent!s}")
+        data["modman"]["root"] = str(p.parent)
+        with open(p, "w") as fd:
+            json.dump(data, fd, indent=4)
+    return data, Path(data["modman"]["root"])
 
 
-@click.group("modman", invoke_without_command=True)
+@click.group("modman", invoke_without_command=True, cls=ClickAliasedGroup)
 @click.option(
     "--log-level",
     "-L",
@@ -85,12 +110,12 @@ def main(ctx: click.Context, log_level: str, log_file: str | None, _version: boo
         log_file = Path(appdirs.user_cache_dir("modman")) / "modman.log"
     if log_level.upper() == "DEBUG":
         install(show_locals=True)
-    logging.basicConfig(
-        level=logging.getLevelName(log_level.upper()),
-        format="%(message)s",
-        datefmt="[%X]",
-        handlers=[RichHandler(markup=True)],
-    )
+    # Add a console output stream for log_level
+    stream_handler = RichHandler(show_path=False)
+    stream_handler.setLevel(logging.getLevelName(log_level.upper()))
+    logger.addHandler(stream_handler)
+    logger.setLevel(logging.DEBUG)
+
     logging.getLogger("hpack.hpack").setLevel("INFO")
     logging.getLogger("httpcore.http2").setLevel("INFO")
     logger.debug("Silenced hpack.hpack and httpcore.http2 logs as they've way too verbose.")
@@ -105,10 +130,15 @@ def main(ctx: click.Context, log_level: str, log_file: str | None, _version: boo
         logger.debug("Found mods directory at %s", mods_dir)
         logger.debug("Contents: %s", ", ".join(str(x) for x in mods_dir.iterdir()))
 
-    if _version:
+    if (last_update_file := Path(appdirs.user_cache_dir("modman")) / ".last_update_ts").exists():
+        last_update_ts = float(last_update_file.read_text() or "0.0")
+    else:
+        last_update_ts = 0.0
+    if _version or (time.time() - last_update_ts) > 806400:
         mm_version = parse_version(importlib_version("modman"))
         logger.info("ModMan Version: %s", mm_version)
-        rich.print("ModMan is running version %s" % mm_version)
+        if _version:
+            rich.print("ModMan is running version %s" % mm_version)
         logger.debug("Checking for updates...")
         local_version = mm_version.local
         if not local_version.startswith("g"):
@@ -170,11 +200,24 @@ def init(name: str, auto: bool, server_type: str, server_version: str):
         logger.error("'--no-auto' and '--server-type/-version auto' are mutually exclusive.")
         raise click.Abort()
 
-    config_data = {"modman": {"name": name, "server": {"type": server_type, "version": server_version}}, "mods": {}}
+    config_data = {
+        "modman": {
+            "name": name,
+            "server": {
+                "type": server_type,
+                "version": server_version
+            },
+            "root": str(Path.cwd())
+        },
+        "mods": {}
+    }
 
     api = ModrinthAPI()
 
     if auto:
+        jars = list(Path.cwd().glob("*.jar"))
+        if len(jars) > 1:
+            logger.warning("Multiple jar files found. Auto-detection may not work as expected.")
         for jar in Path.cwd().glob("*.jar"):
             logger.debug("Inspecting jar %r", jar)
             with zipfile.ZipFile(jar) as _zip:
@@ -232,13 +275,14 @@ def init(name: str, auto: bool, server_type: str, server_version: str):
     rich.print("[green]Created modman.json.")
 
 
-@main.command("install")
+@main.command("install", aliases=["add"])
 @click.argument("mods", type=str, nargs=-1)
 @click.option("--reinstall", "-R", is_flag=True, help="Whether to reinstall already installed mods.")
 @click.option("--optional/--no-optional", "-O/-N", default=False, help="Whether to install optional dependencies.")
-def install_mod(mods: tuple[str], optional: bool, reinstall: bool):
+@click.option("--dry", "-D", is_flag=True, help="Whether to simulate the installation.")
+def install_mod(mods: tuple[str], optional: bool, reinstall: bool, dry: bool):
     """Installs a mod."""
-    config = load_config()
+    config, root = load_config()
     if not mods:
         mods = config["mods"].keys()
         if not mods:
@@ -318,16 +362,39 @@ def install_mod(mods: tuple[str], optional: bool, reinstall: bool):
         for dependency_info in version_info["dependencies"]:
             if dependency_info["dependency_type"] == "optional" and not optional:
                 logger.info(
-                    "%s depends on %s==%s, but it is optional.",
+                    "%s depends on %s==%s, but it is optional. Skipping.",
                     mod_info["title"],
                     dependency_info["project_id"],
                     dependency_info["version_id"],
                 )
                 continue
+            else:
+                logger.info("%s depends on %s==%s, finding version.", mod_info["title"], dependency_info["project_id"], dependency_info["version_id"])
             dependency = api.get_project(dependency_info["project_id"])
-            dependency_version = api.get_version(dependency_info["project_id"], dependency_info["version_id"])
+            if dependency_info["version_id"] is None:
+                # Assume latest version
+                versions = api.get_versions(
+                    dependency_info["project_id"],
+                    loader=config["modman"]["server"]["type"],
+                    game_version=config["modman"]["server"]["version"],
+                )
+                if not versions:
+                    logger.critical(
+                        "Mod %s does not support %s (no versions).",
+                        dependency["title"],
+                        config["modman"]["server"]["version"],
+                    )
+                    continue
+                logger.debug(
+                    "Got versions [%s], picking index 0 (supposedly the latest): %s",
+                    ", ".join(v["name"] for v in versions),
+                    versions[0]["name"],
+                )
+                dependency_version = versions[0]
+            else:
+                dependency_version = api.get_version(dependency_info["project_id"], dependency_info["version_id"])
             logger.info(
-                "%s depends on %s==%s", mod_info["title"], dependency["title"], dependency_version["name"]
+                "%s depends on %s==%s", mod_info["title"], dependency["title"], dependency_version["version_number"]
             )
             logger.info("Checking for dependency version conflicts.")
             conflicts = api.find_dependency_version_conflicts(mod_info["id"], version_info["id"], config)
@@ -346,22 +413,28 @@ def install_mod(mods: tuple[str], optional: bool, reinstall: bool):
                 rich.print("[red]Mod %r is incompatible with %r." % (mod_info["title"], dependency["project_id"]))
 
     table = Table("Mod", "Version", title="Installing Mods")
+    v = 0
     for item in queue:
         _mod_info = item["mod"]
         _version_info = item["version"]
         logger.debug("Downloading %s==%s", _mod_info["title"], _version_info["name"])
-        # rich.print(f"Downloading {_mod_info['title']} (version {_version_info['name']})")
-        api.download_mod(_version_info, Path.cwd() / "mods")
+        if dry is False:
+            api.download_mod(_version_info, root / "mods")
         table.add_row(_mod_info["title"], _version_info["name"])
+        v += 1
         config["mods"][_mod_info["slug"]] = {"project": _mod_info, "version": _version_info}
 
     with open(".modman.json", "w") as fd:
         json.dump(config, fd, indent=4)
-    rich.print(table)
-    rich.print("[green]Done.")
+
+    if v:
+        rich.print(table)
+        rich.print("[green]Done.")
+    else:
+        rich.print("[yellow]:warning: No changes made. All mods are already installed, or unavailable.")
 
 
-@main.command("update")
+@main.command("update", aliases=["upgrade"])
 @click.argument("mods", type=str, nargs=-1)
 @click.option("--game-version", "--server-version", "-V", type=str, default=None, help="The game version to update to.")
 @click.option("--optional/--no-optional", "-O/-N", default=False, help="Whether to update optional dependencies.")
@@ -375,7 +448,7 @@ def update_mod(mods: tuple[str], game_version: str = None, optional: bool = True
     If a mod does not have any updates available, it will be skipped.
     """
     api = ModrinthAPI()
-    config = load_config()
+    config, root = load_config()
     if not mods:
         logger.info("No mods specified. Updating all mods.")
         mods = config["mods"].keys()
@@ -440,11 +513,11 @@ def update_mod(mods: tuple[str], game_version: str = None, optional: bool = True
             logger.warning("Not upgrading %s, already up to date.", _mod_info["title"])
             continue
         logger.debug("Downloading %s==%s", _mod_info["title"], _version_info["name"])
-        api.download_mod(_version_info, Path.cwd() / "mods")
+        api.download_mod(_version_info, root / "mods")
         try:
             primary_file = ModrinthAPI.pick_primary_file(config["mods"][_mod_info["slug"]]["version"]["files"])
             logger.debug("Removing old version %s", primary_file["filename"])
-            fs_file = Path.cwd() / "mods" / primary_file["filename"]
+            fs_file = root / "mods" / primary_file["filename"]
             logger.debug("Deleting file %s (upgrade)", fs_file)
             fs_file.unlink(True)
         except OSError as e:
@@ -461,7 +534,7 @@ def update_mod(mods: tuple[str], game_version: str = None, optional: bool = True
     rich.print("[green]Done.")
 
 
-@main.command("uninstall")
+@main.command("uninstall", aliases=["remove", "del", "delete"])
 @click.argument("mods", type=str, nargs=-1)
 @click.option("--purge", "-P", is_flag=True, help="Whether to delete dependencies too.")
 def uninstall(mods: tuple[str], purge: bool):
@@ -469,7 +542,7 @@ def uninstall(mods: tuple[str], purge: bool):
     if not mods:
         rich.print("[red]No mods specified.")
         return
-    config = load_config()
+    config, root = load_config()
 
     mod_identifiers = {}
     for key, mod in config["mods"].items():
@@ -512,7 +585,7 @@ def uninstall(mods: tuple[str], purge: bool):
                     dependency = config["mods"][dependency_info["project_id"]]
                     rich.print(f"Uninstalling dependency {dependency['project']['title']}")
                     primary_file = ModrinthAPI.pick_primary_file(dependency["version"]["files"])
-                    fs_file = Path.cwd() / "mods" / primary_file["filename"]
+                    fs_file = root / "mods" / primary_file["filename"]
                     try:
                         fs_file.unlink(True)
                     except OSError as e:
@@ -524,7 +597,7 @@ def uninstall(mods: tuple[str], purge: bool):
                     del config["mods"][dependency_info["project_id"]]
         rich.print(f"Uninstalling mod {mod_info['project']['title']}")
         primary_file = ModrinthAPI.pick_primary_file(mod_info["version"]["files"])
-        file = Path.cwd() / "mods" / primary_file["filename"]
+        file = root / "mods" / primary_file["filename"]
         try:
             logger.debug("Removing file %s (uninstalling)", file)
             file.unlink(True)
@@ -539,45 +612,25 @@ def uninstall(mods: tuple[str], purge: bool):
 
 
 @main.command("list")
-@click.option(
-    "--verbose",
-    "-V",
-    help="Shows additional information about the mods.",
-    is_flag=True
-)
-def list_mods(verbose: bool):
+def list_mods():
     """Lists all installed mods and their version."""
-    config = load_config()
-    headers = [
-        "Name",
-        "Version",
-        "File"
-    ]
-    if verbose:
-        headers.append("Size")
-        headers.insert(1, "ID")
+    config, root = load_config()
     table = Table(
         "Mod",
         "Version",
         "File",
         title=f"Installed Mods (Minecraft {config['modman']['server']['version']})"
     )
-    for mod in sorted(config["mods"].values(), key=lambda v: v["project"]["title"]):
-        file = Path.cwd() / "mods" / ModrinthAPI.pick_primary_file(mod["version"]["files"])["filename"]
+    for mod in config["mods"].values():
+        file = root / "mods" / ModrinthAPI.pick_primary_file(mod["version"]["files"])["filename"]
         if not file.exists():
             logger.warning(
                 "File %s does not exist. Was it deleted? Try `modman install -R %s`", file, mod["project"]["slug"]
             )
-        values = [
-            mod["project"]["title"],
-            mod["version"]["version_number"],
-            str(file.resolve())
-        ]
-        if verbose:
-            values.insert(1, mod["project"]["id"])
-            values.append(str(file.stat().st_size))
         table.add_row(
-            *values,
+            mod["project"]["title"],
+            mod["version"]["name"],
+            str(file.resolve()),
             style="" if file.exists() else "red"
         )
     rich.print(table)
@@ -589,11 +642,11 @@ def create_pack(server_side: bool):
     """Creates a modpack zip to send to people using the server
 
     This will only include client-side mods by default. You can include all mods with the -S flag."""
-    config = load_config()
-    if not (Path.cwd() / "mods").exists():
+    config, root = load_config()
+    if not (root / "mods").exists():
         logger.critical("No mods directory found. Are you in the right directory?")
         return
-    output_zip = Path.cwd() / (config["modman"]["name"] + ".zip")
+    output_zip = root / (config["modman"]["name"] + ".zip")
 
     with zipfile.ZipFile(output_zip, "w", compresslevel=9) as _zip:
         for mod in config["mods"].values():
@@ -602,7 +655,7 @@ def create_pack(server_side: bool):
                 continue
             primary_file = ModrinthAPI.pick_primary_file(mod["version"]["files"])
             logger.info("Appending %s", primary_file["filename"])
-            _zip.write(Path.cwd() / "mods" / primary_file["filename"], primary_file["filename"])
+            _zip.write(root / "mods" / primary_file["filename"], primary_file["filename"])
     rich.print("[green]Created ZIP at %s" % output_zip)
 
 
@@ -689,10 +742,11 @@ def download_fabric(game_version: str, loader_version: str | None, installer_ver
     rich.print("Downloaded Fabric to %s" % output_file)
 
     try:
-        config = load_config()
+        config, root = load_config()
     except RuntimeError:
         logger.warning("unable to update modman.json server version, please update manually or re-run init")
         return
+    config["modman"]["root"] = str(Path.cwd())
     config["modman"]["server"]["type"] = "fabric"
     config["modman"]["server"]["version"] = game_version
     with open(".modman.json", "w") as fd:
@@ -795,7 +849,7 @@ def see_changelog(
         return f"{round((now - dt).seconds / 3600)} hours ago"
 
     api = ModrinthAPI()
-    config = load_config()
+    config, root = load_config()
     mod_info = api.get_project(mod)
     if version is None:
         versions = api.get_versions(
@@ -861,7 +915,7 @@ def search(sort_by: str, page: int, limit: int, query: str):
 
     api = ModrinthAPI()
     try:
-        config = load_config()
+        config, root = load_config()
         logger.info(
             "Loaded modman config, using Minecraft version %s with server type %s.",
             config["modman"]["server"]["version"],
@@ -900,7 +954,7 @@ def search(sort_by: str, page: int, limit: int, query: str):
     rich.print(table)
 
 
-@main.command("view")
+@main.command("view", aliases=["info", "show"])
 @click.option("--no-hyperlinks", "-H", is_flag=True, help="Whether to disable hyperlinks in markdown rendering.")
 @click.argument("mod", type=str, nargs=1, required=True)
 def view(mod: str, no_hyperlinks: bool):
