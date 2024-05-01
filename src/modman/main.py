@@ -49,8 +49,10 @@ from .lib import ModrinthAPI
 
 logger = logging.getLogger("modman")
 
+app_dir = Path(appdirs.user_cache_dir("modman"))
+app_dir.mkdir(parents=True, exist_ok=True)
 # Create the file debug stream
-file_handler = logging.FileHandler(Path(appdirs.user_cache_dir("modman")) / "modman.log")
+file_handler = logging.FileHandler(app_dir / "modman.log")
 file_handler.setFormatter(logging.Formatter("%(asctime)s:%(levelname)s:%(name)s: %(message)s"))
 file_handler.setLevel(logging.DEBUG)
 logger.addHandler(file_handler)
@@ -70,7 +72,7 @@ def load_config() -> tuple[dict, Path]:
         )
         raise click.Abort("No modman.json found.")
 
-    with open(p, "r") as fd:
+    with open(p) as fd:
         data = json.load(fd)
 
     # Migrations
@@ -94,7 +96,7 @@ def load_config() -> tuple[dict, Path]:
     "--log-file",
     "-l",
     type=click.Path(),
-    default=str(Path(appdirs.user_cache_dir("modman")) / "modman.log"),
+    default=str(app_dir / "modman.log"),
     envvar="MODMAN_LOG_FILE",
 )
 @click.option(
