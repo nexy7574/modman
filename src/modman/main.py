@@ -4,9 +4,8 @@ import logging
 import os
 import time
 import zipfile
-from pathlib import Path
 from importlib.metadata import version as importlib_version
-from packaging.version import parse as parse_version
+from pathlib import Path
 
 import appdirs
 import click
@@ -14,6 +13,7 @@ import httpx
 import packaging.version
 import rich
 from click_aliases import ClickAliasedGroup
+from packaging.version import parse as parse_version
 from rich.layout import Layout
 from rich.logging import RichHandler
 from rich.markdown import Markdown
@@ -99,13 +99,7 @@ def load_config() -> tuple[dict, Path]:
     default=str(app_dir / "modman.log"),
     envvar="MODMAN_LOG_FILE",
 )
-@click.option(
-    "_version",
-    "--version",
-    "-V",
-    is_flag=True,
-    help="Prints the version of modman and checks for updates."
-)
+@click.option("_version", "--version", "-V", is_flag=True, help="Prints the version of modman and checks for updates.")
 @click.pass_context
 def main(ctx: click.Context, log_level: str, log_file: str | None, _version: bool):
     if log_file is None:
@@ -203,15 +197,8 @@ def init(name: str, auto: bool, server_type: str, server_version: str):
         raise click.Abort()
 
     config_data = {
-        "modman": {
-            "name": name,
-            "server": {
-                "type": server_type,
-                "version": server_version
-            },
-            "root": str(Path.cwd())
-        },
-        "mods": {}
+        "modman": {"name": name, "server": {"type": server_type, "version": server_version}, "root": str(Path.cwd())},
+        "mods": {},
     }
 
     api = ModrinthAPI()
@@ -306,7 +293,7 @@ def install_mod(mods: tuple[str], optional: bool, reinstall: bool, dry: bool):
                 while mod_info is None:
                     try:
                         mod_info = api.interactive_search(mod, config)
-                        mod_info = api.get_project(mod_info['slug'])
+                        mod_info = api.get_project(mod_info["slug"])
                     except KeyboardInterrupt:
                         raise click.Abort()
             else:
@@ -371,7 +358,12 @@ def install_mod(mods: tuple[str], optional: bool, reinstall: bool, dry: bool):
                 )
                 continue
             else:
-                logger.info("%s depends on %s==%s, finding version.", mod_info["title"], dependency_info["project_id"], dependency_info["version_id"])
+                logger.info(
+                    "%s depends on %s==%s, finding version.",
+                    mod_info["title"],
+                    dependency_info["project_id"],
+                    dependency_info["version_id"],
+                )
             dependency = api.get_project(dependency_info["project_id"])
             if dependency_info["version_id"] is None:
                 # Assume latest version
@@ -553,7 +545,7 @@ def uninstall(mods: tuple[str], purge: bool):
             mod["project"]["title"],
             mod["project"]["slug"],
             ModrinthAPI.pick_primary_file(mod["version"]["files"])["filename"],
-            key
+            key,
         ]
 
     identifiers_flat = [item for value_pack in mod_identifiers.values() for item in value_pack]
@@ -591,11 +583,7 @@ def uninstall(mods: tuple[str], purge: bool):
                     try:
                         fs_file.unlink(True)
                     except OSError as e:
-                        logger.warning(
-                            "Could not remove dependency file %s (uninstalling): %s",
-                            fs_file.resolve(),
-                            e
-                        )
+                        logger.warning("Could not remove dependency file %s (uninstalling): %s", fs_file.resolve(), e)
                     del config["mods"][dependency_info["project_id"]]
         rich.print(f"Uninstalling mod {mod_info['project']['title']}")
         primary_file = ModrinthAPI.pick_primary_file(mod_info["version"]["files"])
@@ -617,12 +605,7 @@ def uninstall(mods: tuple[str], purge: bool):
 def list_mods():
     """Lists all installed mods and their version."""
     config, root = load_config()
-    table = Table(
-        "Mod",
-        "Version",
-        "File",
-        title=f"Installed Mods (Minecraft {config['modman']['server']['version']})"
-    )
+    table = Table("Mod", "Version", "File", title=f"Installed Mods (Minecraft {config['modman']['server']['version']})")
     for mod in config["mods"].values():
         file = root / "mods" / ModrinthAPI.pick_primary_file(mod["version"]["files"])["filename"]
         if not file.exists():
@@ -630,10 +613,7 @@ def list_mods():
                 "File %s does not exist. Was it deleted? Try `modman install -R %s`", file, mod["project"]["slug"]
             )
         table.add_row(
-            mod["project"]["title"],
-            mod["version"]["name"],
-            str(file.resolve()),
-            style="" if file.exists() else "red"
+            mod["project"]["title"], mod["version"]["name"], str(file.resolve()), style="" if file.exists() else "red"
         )
     rich.print(table)
 

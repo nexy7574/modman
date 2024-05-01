@@ -56,9 +56,7 @@ class ModrinthAPI:
                     time.sleep(1)
                     progress.update(task, advance=1)
         self.log.debug(
-            "Ratelimit has %d hits left, resets in %d seconds",
-            self.ratelimit_remaining,
-            self.ratelimit_reset
+            "Ratelimit has %d hits left, resets in %d seconds", self.ratelimit_remaining, self.ratelimit_reset
         )
         with rich.get_console().status("[cyan dim]GET " + url):
             for i in range(5):
@@ -186,12 +184,7 @@ class ModrinthAPI:
 
     def download_mod(self, version: dict, directory: pathlib.Path, *, progress: Progress = None):
         file = self.pick_primary_file(version["files"])
-        self.log.info(
-            "Downloading %s to %s for version %r",
-            file["filename"],
-            directory,
-            version["version_number"]
-        )
+        self.log.info("Downloading %s to %s for version %r", file["filename"], directory, version["version_number"])
         if not directory.exists():
             directory.mkdir(parents=True)
 
@@ -237,12 +230,7 @@ class ModrinthAPI:
         shutil.copy(fs_file, fs_mod)
         self.log.info("Downloaded %s", file["filename"])
 
-    def find_dependency_version_conflicts(
-            self,
-            project_id: str,
-            version_id: str,
-            config: dict
-    ) -> list[dict[str, str]]:
+    def find_dependency_version_conflicts(self, project_id: str, version_id: str, config: dict) -> list[dict[str, str]]:
         conflicts = []
         for mod in config["mods"].values():
             version_info = mod["version"]
@@ -364,7 +352,7 @@ class ModrinthAPI:
             versions=[config["modman"]["server"]["version"]],
             loaders=[config["modman"]["server"]["type"]],
             server_side=["required", "optional"],
-            limit=20
+            limit=20,
         )
         if not results:
             rich.print(f"[red]No mod with the slug, ID, or name {query!r} was found.")
