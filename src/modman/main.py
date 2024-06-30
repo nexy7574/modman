@@ -1,4 +1,5 @@
 import datetime
+import enum
 import json
 import logging
 import os
@@ -6,6 +7,7 @@ import time
 import zipfile
 from importlib.metadata import version as importlib_version
 from pathlib import Path
+from threading import Thread
 
 import appdirs
 import click
@@ -23,6 +25,14 @@ from rich.table import Table
 from rich.traceback import install
 
 from .lib import ModrinthAPI
+
+
+def release_is_newer(r_type: str, than: str) -> bool:
+    """
+    Checks that r_type is a newer or equal version to than.
+    """
+    mapping = {"release": 2, "beta": 1, "alpha": 0}
+    return mapping[r_type] >= mapping[than]
 
 # aikars_flags = [
 #     "-XX:+UseG1GC",
@@ -126,7 +136,8 @@ def main(ctx: click.Context, log_level: str, log_file: str | None, _version: boo
         logger.debug("Found mods directory at %s", mods_dir)
         logger.debug("Contents: %s", ", ".join(str(x) for x in mods_dir.iterdir()))
 
-    if (last_update_file := Path(appdirs.user_cache_dir("modman")) / ".last_update_ts").exists():
+    last_update_file = Path(appdirs.user_cache_dir("modman")) / ".last_update_ts"
+    if last_update_file.exists():
         last_update_ts = float(last_update_file.read_text() or "0.0")
     else:
         last_update_ts = 0.0
@@ -145,6 +156,7 @@ def main(ctx: click.Context, log_level: str, log_file: str | None, _version: boo
             if commits_git.status_code != 200:
                 logger.warning("Could not check for updates: %s", commits_git.text)
             else:
+                last_update_file.write_text(str(time.time()))
                 commits = commits_git.json()
                 latest_commit = commits[0]
                 if latest_commit["sha"][:7] != commit_hash:
@@ -228,12 +240,24 @@ def init(name: str, auto: bool, server_type: str, server_version: str):
                                 changed = True
                         if not changed:
                             logger.info("Found install.properties, but could not determine server type.")
+                elif "version.json" in _zip.namelist():
+                    logger.debug("Found vanilla server.")
+                    config_data["modman"]["server"]["type"] = "vanilla"
+                    with _zip.open("install.properties") as fd:
+                        version_json = json.load(fd)
+                        config_data["modman"]["server"]["version"] = version_json["id"]
+                        logger.info("Detected server version %r.", version_json["id"])
+                else:
+                    raise click.Abort("Could not detect server type. Please specify it manually.")
+        if not config_data["modman"]["server"]["version"]:
+            raise click.Abort("Could not detect server version. Please specify it manually.")
 
         mods_dir = Path.cwd() / "mods"
         if not mods_dir.exists():
             logger.critical("'mods' directory does not exist. Cannot auto-detect mods.")
             return
 
+        to_get = {}
         for mod in mods_dir.iterdir():
             if mod.is_dir():
                 continue
@@ -244,23 +268,47 @@ def init(name: str, auto: bool, server_type: str, server_version: str):
                 logger.info(f"File {mod} does not appear to be a mod, or it is not on modrinth.")
                 continue
             else:
-                mod_info = api.get_project(mod_version_info["project_id"])
-                primary_file = ModrinthAPI.pick_primary_file(mod_version_info["files"])["filename"]
-                logger.info(f"Detected {mod_info['title']!r} version {mod_version_info['name']!r} from {mod}")
-                if mod.name != primary_file:
-                    logger.warning(
-                        "File %r does not match primary file name %r. Renaming it.",
-                        mod,
-                        primary_file,
-                    )
-                    mod.rename(mod.with_name(primary_file))
-                config_data["mods"][mod_info["slug"]] = {
-                    "project": mod_info,
+                to_get[mod_version_info["project_id"]] = {
+                    "project": {},
                     "version": mod_version_info,
+                    "file": mod
                 }
+        projects = api.get_projects_bulk(list(to_get.keys()))
+        for mod_info in projects:
+            mod_version_info = to_get[mod_info["id"]]["version"]
+            mod = to_get[mod_info["id"]]["file"]
+            primary_file = ModrinthAPI.pick_primary_file(mod_version_info["files"])["filename"]
+            logger.info(f"Detected {mod_info['title']!r} version {mod_version_info['name']!r} from {mod}")
+            if mod.name != primary_file:
+                logger.warning(
+                    "File %r does not match primary file name %r. Renaming it.",
+                    mod,
+                    primary_file,
+                )
+                mod.rename(mod.with_name(primary_file))
+            config_data["mods"][mod_info["slug"]] = {
+                "project": mod_info,
+                "version": mod_version_info,
+            }
+    if config_data["modman"]["server"]["type"] == "auto":
+        logger.error("Could not detect server type. Please specify it manually.")
+        raise click.Abort()
+    if config_data["modman"]["server"]["version"] == "auto":
+        logger.error("Could not detect server version. Please specify it manually.")
+        raise click.Abort()
 
     with open(".modman.json", "w+") as fd:
         json.dump(config_data, fd, indent=4)
+    rich.print(f"[green]Detected server: {server_type}, {server_version}")
+    table = Table("Mod name", "Installed version", "File", title="Detected Mods")
+    for mod in config_data["mods"].values():
+        file = Path.cwd() / "mods" / ModrinthAPI.pick_primary_file(mod["version"]["files"])["filename"]
+        table.add_row(
+            mod["project"]["title"],
+            mod["version"]["name"],
+            str(file),
+        )
+    rich.print(table)
     rich.print("[green]Created modman.json.")
 
 
@@ -431,8 +479,16 @@ def install_mod(mods: tuple[str], optional: bool, reinstall: bool, dry: bool):
 @main.command("update", aliases=["upgrade"])
 @click.argument("mods", type=str, nargs=-1)
 @click.option("--game-version", "--server-version", "-V", type=str, default=None, help="The game version to update to.")
-@click.option("--optional/--no-optional", "-O/-N", default=False, help="Whether to update optional dependencies.")
-def update_mod(mods: tuple[str], game_version: str = None, optional: bool = True):
+@click.option(
+    "--pre-releases",
+    "--pre",
+    "-P",
+    default=False,
+    is_flag=True,
+    help="Whether to allow updating to alpha/beta versions. By default, will only upgrade to releases, unless"
+         " a pre-release is already installed."
+)
+def update_mod(mods: tuple[str], game_version: str = None, pre_releases: bool = False):
     """Updates one or more mods.
 
     If no mods are specified, all mods will be updated.
@@ -441,89 +497,128 @@ def update_mod(mods: tuple[str], game_version: str = None, optional: bool = True
 
     If a mod does not have any updates available, it will be skipped.
     """
+
+    def get_installed_project(mod_slug: str) -> dict | None:
+        for _key, _data in config["mods"].items():
+            if _key == mod_slug:
+                return _data["project"]
+            elif _data["project"]["id"] == mod_slug:
+                return _data["project"]
+        return
+
+    def get_installed_version(mod_slug: str) -> dict | None:
+        for _key, _data in config["mods"].items():
+            if _key == mod_slug:
+                return _data["version"]
+            elif _data["project"]["id"] == mod_slug:
+                return _data["version"]
+        raise ValueError(f"Mod {mod_slug} is not installed.")
+
     api = ModrinthAPI()
     config, root = load_config()
+    if game_version is None:
+        game_version = config["modman"]["server"]["version"]
+    game_loader = config["modman"]["server"]["type"]
+
     if not mods:
         logger.info("No mods specified. Updating all mods.")
         mods = config["mods"].keys()
 
-    to_update = []
-    for mod in mods:
-        mod_info = api.get_project(mod)
-        if mod_info["slug"] not in config["mods"]:
-            logger.warning("Mod %s is not installed.", mod_info["title"])
-            continue
-        if game_version is None:
-            game_version = config["modman"]["server"]["version"]
-        versions = api.get_versions(
-            mod_info["id"], loader=config["modman"]["server"]["type"], game_version=game_version
-        )
-        if not versions:
-            logger.critical("Mod %s does not support %s (no versions).", mod_info["title"], game_version)
-            continue
-        version_info = versions[0]
-        if version_info["id"] == config["mods"][mod_info["slug"]]["version"]["id"]:
-            logger.info("Mod %s is already up to date.", mod_info["title"])
-            continue
-        to_update.append(
-            {"mod": mod_info, "old_version": config["mods"][mod_info["slug"]]["version"], "new_version": version_info}
-        )
+    mods = list(mods)
+    projects = {}
+    for project in mods.copy():
+        result = get_installed_project(project)
+        if result:
+            projects[result["slug"]] = result
+            mods.remove(project)
+        else:
+            logger.warning("Mod %r is not installed.", project)
 
-    # Resolve dependencies
-    queue = [*to_update]
-    for mod in to_update:
-        mod_info = mod["mod"]
-        version_info = mod["new_version"]
-        for dependency_info in version_info["dependencies"]:
-            if dependency_info["dependency_type"] == "optional" and not optional:
-                logger.info(
-                    "%s depends on %s==%s, but it is optional.",
-                    mod_info["title"],
-                    dependency_info["project_id"],
-                    dependency_info["version_id"],
-                )
-                continue
-            logger.info(
-                "%s depends on %s==%s", mod_info["title"], dependency_info["project_id"], dependency_info["version_id"]
-            )
-            dependency = api.get_project(dependency_info["project_id"])
-            dependency_version = api.get_version(dependency_info["project_id"], dependency_info["version_id"])
-            logger.info("Checking for dependency conflicts.")
-            conflicts = api.find_dependency_version_conflicts(mod_info["id"], version_info["id"], config)
-            if conflicts:
-                logger.warning("Found dependency conflicts: %s", conflicts)
-            queue.append(
-                {
-                    "mod": dependency,
-                    "old_version": dependency_version,
-                    "new_version": dependency_version,
-                }
-            )
+    if not projects:
+        logger.warning("No valid mods specified.")
+        return
 
-    for item in queue:
-        _mod_info = item["mod"]
-        _version_info = item["new_version"]
-        if _version_info["id"] == item["old_version"]["id"]:
-            logger.warning("Not upgrading %s, already up to date.", _mod_info["title"])
+    changes = {}
+
+    all_projects = api.get_projects_bulk(list(projects.keys()))
+    logger.debug("Got %d projects.", len(all_projects))
+    _all_version_ids = []
+    for project in all_projects:
+        _all_version_ids.extend(project["versions"][-5:])
+    all_versions = api.get_versions_bulk(_all_version_ids)
+
+    for version in all_versions:
+        project = get_installed_project(version["project_id"])
+        installed_version = get_installed_version(version["project_id"])
+        installed_datetime = datetime.datetime.fromisoformat(installed_version["date_published"])
+        version_release_datetime = datetime.datetime.fromisoformat(version["date_published"])
+        if version_release_datetime <= installed_datetime:
+            logger.debug("Release %r was older than the currently installed version, ignoring.", version["name"])
             continue
-        logger.debug("Downloading %s==%s", _mod_info["title"], _version_info["name"])
-        api.download_mod(_version_info, root / "mods")
-        try:
-            primary_file = ModrinthAPI.pick_primary_file(config["mods"][_mod_info["slug"]]["version"]["files"])
-            logger.debug("Removing old version %s", primary_file["filename"])
-            fs_file = root / "mods" / primary_file["filename"]
-            logger.debug("Deleting file %s (upgrade)", fs_file)
-            fs_file.unlink(True)
-        except OSError as e:
-            logger.warning("Could not remove old version: %s", e, exc_info=True)
-        config["mods"][_mod_info["slug"]] = {"project": _mod_info, "version": _version_info}
+
+        release_type = version["version_type"]
+        if not release_is_newer(release_type, installed_version["version_type"]):
+            logger.debug("Release %r is not newer than the installed version, ignoring.", version["name"])
+            continue
+        elif release_type != "release" and pre_releases is False and installed_version["version_type"] == "release":
+            logger.debug("Release %r is a pre-release, but pre-releases are disabled, ignoring.", version["name"])
+            continue
+
+        if game_loader not in version["loaders"]:
+            logger.debug("Release %r does not support loader %r, ignoring.", version["name"], game_loader)
+            continue
+
+        if version["game_versions"] and game_version not in version["game_versions"]:
+            logger.debug("Release %r does not support game version %r, ignoring.", version["name"], game_version)
+            continue
+
+        changes[project["slug"]] = {
+            "project": project,
+            "installed_version": installed_version,
+            "new_version": version
+        }
+
+    if not changes:
+        logger.info("No updates available.")
+        return
+
+    progress = Progress(
+        *Progress.get_default_columns(),
+        DownloadColumn(os.name != "nt"),
+        TransferSpeedColumn(),
+    )
+    download_tasks = []
+    for slug, metadata in changes.items():
+        project = metadata["project"]
+        installed_version = metadata["installed_version"]
+        new_version = metadata["new_version"]
+        logger.info(
+            "Updating %s from %s to %s",
+            project["title"],
+            installed_version["name"],
+            new_version["name"],
+        )
+        t = Thread(
+            target=lambda: api.download_mod(new_version, root / "mods", progress=progress),
+        )
+        t.start()
+        download_tasks.append(
+            (t, metadata)
+        )
+    for thread, _ in download_tasks:
+        thread.join()
+    progress.refresh()
+
+    table = Table("Mod", "Old Version", "New Version", title="Updated Mods")
+    for _, metadata in download_tasks:
+        project = metadata["project"]
+        installed_version = metadata["installed_version"]
+        new_version = metadata["new_version"]
+        table.add_row(project["title"], installed_version["name"], new_version["name"])
+        config["mods"][project["slug"]] = {"project": project, "version": new_version}
 
     with open(".modman.json", "w") as fd:
         json.dump(config, fd, indent=4)
-
-    table = Table("Mod", "Old Version", "New Version", title="Updated Mods")
-    for item in to_update:
-        table.add_row(item["mod"]["title"], item["old_version"]["name"], item["new_version"]["name"])
     rich.print(table)
     rich.print("[green]Done.")
 
@@ -929,7 +1024,7 @@ def search(sort_by: str, page: int, limit: int, query: str):
             ("[dim]%s[/]" if n % 2 else "[b]%s[/]") % result["title"],
             result["slug"],
             "{:,}".format(result["downloads"]),
-            "\N{white heavy check mark}" if result["slug"] in config["mods"] else "\N{cross mark}",
+            "\N{WHITE HEAVY CHECK MARK}" if result["slug"] in config["mods"] else "\N{CROSS MARK}",
             result["description"],
         )
         n += 1

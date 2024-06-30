@@ -13,7 +13,7 @@ import typing
 import appdirs
 import httpx
 import rich
-from rich.progress import DownloadColumn, Progress, TransferSpeedColumn
+from rich.progress import DownloadColumn, Progress, TransferSpeedColumn, TaskID
 from rich.progress import open as rich_open
 from rich.prompt import Prompt
 
@@ -28,14 +28,17 @@ except ImportError:
 class ModrinthAPI:
     def __init__(self):
         self.log = logging.getLogger("modman.api.modrinth")
+        # use_staging = os.getenv("MODMAN_USE_STAGING_API", "0") == "1"
         try:
             _version = importlib.metadata.version("modman")
         except importlib.metadata.PackageNotFoundError:
             _version = "0.1.dev1"
+        url = "https://api.modrinth.com/v2"
+        # for whatever reason, the staging API doesn't work.
         self.http = httpx.Client(
-            base_url="https://api.modrinth.com/v2",
+            base_url=url,
             headers={
-                "User-Agent": f"modman/{_version} (https://github.com/nexy7574/modman)",
+                "User-Agent": f"nexy7574/modman/{_version} (https://github.com/nexy7574/modman)",
             },
             http2=HTTP2,
             follow_redirects=True,
@@ -80,7 +83,7 @@ class ModrinthAPI:
 
     def get_projects_bulk(self, project_ids: list[str]) -> list[dict[str, typing.Any]]:
         """Fetches multiple projects at once."""
-        return self.get("/projects", params={"ids": project_ids})
+        return self.get("/projects", params={"ids": json.dumps(list(project_ids))})
 
     def get_project(self, project_id: str) -> dict[str, typing.Any]:
         """
@@ -147,6 +150,10 @@ class ModrinthAPI:
         # Finally, return the results sorted, latest to oldest
         return list(sorted(result, key=lambda v: v["date_published"], reverse=True))
 
+    def get_versions_bulk(self, ids: typing.Iterable[str]) -> list[dict[str, typing.Any]]:
+        ids_safe = json.dumps(list(ids))
+        return self.get("/versions", params={"ids": ids_safe})
+
     def get_version(self, project_id: str, version_id: str | None):
         if version_id is None:
             self.log.info("No version specified for %s==%s, using latest.", project_id, version_id)
@@ -182,7 +189,13 @@ class ModrinthAPI:
                 return file
         return files[0]
 
-    def download_mod(self, version: dict, directory: pathlib.Path, *, progress: Progress = None):
+    def download_mod(
+            self,
+            version: dict,
+            directory: pathlib.Path,
+            *,
+            progress: Progress = None,
+    ):
         file = self.pick_primary_file(version["files"])
         self.log.info("Downloading %s to %s for version %r", file["filename"], directory, version["version_number"])
         if not directory.exists():
@@ -214,7 +227,7 @@ class ModrinthAPI:
 
         self.log.info("Checking file hash for %s", file["filename"])
         fs_hash = hashlib.new("sha512")
-        with rich_open(fs_file, "rb", description="Generating SHA512 sum", transient=True) as fd:
+        with open(fs_file, "rb") as fd:
             while chunk := fd.read(8192):
                 fs_hash.update(chunk)
         if fs_hash.hexdigest() != file["hashes"]["sha512"]:

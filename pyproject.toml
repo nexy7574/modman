@@ -13,23 +13,6 @@ authors = [
     {name = "Nexus", email = "pip@nexy7574.co.uk"}
 ]
 dynamic = ["version", "dependencies"]
-#classifiers = [
-#    "Development Status :: 5 - Production/Stable",
-#    "Intended Audience :: Developers",
-#    "Natural Language :: English",
-#    "Operating System :: Microsoft :: Windows",
-#    "Operating System :: POSIX",
-#    "Programming Language :: Python :: 3 :: Only",
-#    "Programming Language :: Python :: 3.10",
-#    "Programming Language :: Python :: 3.11",
-#    "Programming Language :: Python :: 3.12",
-#    "Programming Language :: Python :: Implementation :: CPython",
-#    "Topic :: Communications",
-#    "Topic :: Internet",
-#    "Topic :: Software Development :: Libraries",
-#    "Topic :: Software Development :: Libraries :: Application Frameworks",
-#    "Topic :: Utilities"
-#]
 
 [project.urls]
 Source = "https://github.com/nexy7574/modman"
@@ -53,3 +36,37 @@ include = 'src/modman(/utils)?/.+\.py'
 [tool.isort]
 profile = "black"
 src_paths = ["src/modman"]
+
+
+[tool.ruff]
+# Replacement for isort & black
+exclude = [".git"]
+target-version = "py39"
+line-length = 120
+indent-width = 4
+respect-gitignore = true
+
+[tool.ruff.lint]
+fixable = ["ALL"]
+ignore =   ["F403", "F405"]
+select = [
+    "E",     # pycodestyle
+    "F",     # Pyflakes
+    "I001",  # isort
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+
+[tool.ruff.lint.isort]
+case-sensitive = true
+combine-as-imports = true
+detect-same-package = true
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 120
+max-line-length = 120
