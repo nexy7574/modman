@@ -299,6 +299,8 @@ def init(name: str, auto: bool, server_type: str, server_version: str):
 
     with open(".modman.json", "w+") as fd:
         json.dump(config_data, fd, indent=4)
+    server_type = config_data["modman"]["server"]["type"]
+    server_version = config_data["modman"]["server"]["version"]
     rich.print(f"[green]Detected server: {server_type}, {server_version}")
     table = Table("Mod name", "Installed version", "File", title="Detected Mods")
     for mod in config_data["mods"].values():
