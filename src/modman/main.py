@@ -3,6 +3,7 @@ import enum
 import json
 import logging
 import os
+import random
 import time
 import zipfile
 from importlib.metadata import version as importlib_version
@@ -57,6 +58,7 @@ def release_is_newer(r_type: str, than: str) -> bool:
 #     "-Daikars.new.flags=true",
 # ]
 
+
 logger = logging.getLogger("modman")
 
 app_dir = Path(appdirs.user_cache_dir("modman"))
@@ -91,7 +93,45 @@ def load_config() -> tuple[dict, Path]:
         data["modman"]["root"] = str(p.parent)
         with open(p, "w") as fd:
             json.dump(data, fd, indent=4)
+    if "file" not in data["modman"]["server"]:
+        logger.warning("Modman meta file is out of date, attempting to migrate")
+        root = Path(data["modman"]["root"])
+        if not root.exists():
+            logger.critical(
+                "Unable to migrate - root path %r does not exist anymore. Please re-run `modman init`.",
+                str(root),
+            )
+            raise click.Abort("Root path does not exist.")
+        for file in root.glob("*.jar"):
+            v = detect_server_version(file)
+            if v:
+                data["modman"]["server"]["type"], data["modman"]["server"]["version"] = v
+                data["modman"]["server"]["file"] = str(file.resolve())
+                break
+        else:
+            logger.critical("Unable to migrate - cannot locate server binary. Please re-run `modman init`.")
+            raise click.Abort("Server binary not found.")
     return data, Path(data["modman"]["root"])
+
+
+def detect_server_version(file: Path) -> tuple[str, str] | None:
+    """
+    Detects the type and version of server at the given destination.
+
+    Return a tuple of (server_type, server_version), or None if it could not be detected.
+    """
+    server_type = server_version = None
+    with zipfile.ZipFile(file) as _zip:
+        if "install.properties" in _zip.namelist():
+            with _zip.open("install.properties") as fd:
+                install_properties = fd.read().decode("utf-8").splitlines()
+                for line in install_properties:
+                    if line.startswith("fabric-loader-version="):
+                        server_type = "fabric"
+                    elif line.startswith("game-version="):
+                        server_version = line.split("=")[1]
+    if server_type and server_version:
+        return server_type, server_version
 
 
 @click.group("modman", invoke_without_command=True, cls=ClickAliasedGroup)
@@ -221,34 +261,14 @@ def init(name: str, auto: bool, server_type: str, server_version: str):
             logger.warning("Multiple jar files found. Auto-detection may not work as expected.")
         for jar in Path.cwd().glob("*.jar"):
             logger.debug("Inspecting jar %r", jar)
-            with zipfile.ZipFile(jar) as _zip:
-                if "install.properties" in _zip.namelist():
-                    logger.debug("Found install.properties in %r", jar)
-                    with _zip.open("install.properties") as fd:
-                        install_properties = fd.read().decode("utf-8").splitlines()
-                        changed = False
-                        for line in install_properties:
-                            if line.startswith("fabric-loader-version="):
-                                config_data["modman"]["server"]["type"] = "fabric"
-                                logger.info("Detected Fabric server.")
-                                changed = True
-                            elif line.startswith("game-version="):
-                                config_data["modman"]["server"]["version"] = line.split("=")[1]
-                                logger.info(
-                                    "Detected server version {!r}.".format(config_data["modman"]["server"]["version"])
-                                )
-                                changed = True
-                        if not changed:
-                            logger.info("Found install.properties, but could not determine server type.")
-                elif "version.json" in _zip.namelist():
-                    logger.debug("Found vanilla server.")
-                    config_data["modman"]["server"]["type"] = "vanilla"
-                    with _zip.open("install.properties") as fd:
-                        version_json = json.load(fd)
-                        config_data["modman"]["server"]["version"] = version_json["id"]
-                        logger.info("Detected server version %r.", version_json["id"])
-                else:
-                    raise click.Abort("Could not detect server type. Please specify it manually.")
+            v = detect_server_version(jar)
+            if v:
+                config_data["modman"]["server"]["type"], config_data["modman"]["server"]["version"] = v
+                config_data["modman"]["server"]["file"] = str(jar.resolve())
+                break
+        else:
+            logger.warning("Could not detect server version. Please specify it manually.")
+            raise click.Abort()
         if not config_data["modman"]["server"]["version"]:
             raise click.Abort("Could not detect server version. Please specify it manually.")
 
@@ -828,6 +848,7 @@ def download_fabric(game_version: str, loader_version: str | None, installer_ver
     config["modman"]["root"] = str(Path.cwd())
     config["modman"]["server"]["type"] = "fabric"
     config["modman"]["server"]["version"] = game_version
+    config["modman"]["server"]["file"] = str(output_file.resolve())
     with open(".modman.json", "w") as fd:
         json.dump(config, fd, indent=4)
     rich.print("Updated modman.json server version. You should run `modman update` to update mods.")
